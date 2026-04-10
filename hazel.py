@@ -27,7 +27,12 @@ CONFIG_FILE = Path(__file__).parent / "config.yaml"
 import platform as _platform
 _IS_WINDOWS = _platform.system() == "Windows"
 _EXE = ".exe" if _IS_WINDOWS else ""
-LLAMA_BIN = Path.home() / "llama.cpp" / "build" / "bin" / f"llama-completion{_EXE}"
+
+# Prefer GPU-accelerated binary if available
+_VULKAN_BIN = Path.home() / "llama.cpp" / "build" / "bin" / "vulkan" / f"llama-completion{_EXE}"
+_CPU_BIN = Path.home() / "llama.cpp" / "build" / "bin" / f"llama-completion{_EXE}"
+LLAMA_BIN = _VULKAN_BIN if _VULKAN_BIN.exists() else _CPU_BIN
+GPU_LAYERS = 99 if _VULKAN_BIN.exists() else 0  # Offload all layers to GPU if Vulkan
 HISTORY_FILE = HAZEL_DIR / "history"
 PROMPT_FILE = HAZEL_DIR / "prompt.txt"
 
@@ -87,7 +92,8 @@ def get_available_ram_gb():
 
 
 def has_gpu():
-    """Check if a GPU with VRAM is available."""
+    """Check if a usable GPU is available."""
+    # NVIDIA
     try:
         r = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
@@ -97,13 +103,15 @@ def has_gpu():
             return True
     except (FileNotFoundError, Exception):
         pass
-    # macOS Metal (Apple Silicon has unified memory, so RAM = VRAM)
+    # Vulkan binary exists = we can use whatever GPU is present (Intel Arc, AMD, etc.)
+    if _VULKAN_BIN.exists():
+        return True
+    # macOS Metal (Apple Silicon)
     try:
         r = subprocess.run(["sysctl", "-n", "hw.memsize"],
                           capture_output=True, text=True, timeout=2)
         if r.returncode == 0:
-            import platform
-            if platform.machine() == "arm64":  # Apple Silicon
+            if _platform.machine() == "arm64":
                 return True
     except (FileNotFoundError, Exception):
         pass
@@ -1517,6 +1525,7 @@ def run_llm(prompt_text, model_path, tokens, timeout, temp=None):
         "--temp", str(t),
         "--top-p", "0.9",
         "--no-display-prompt",
+        "-ngl", str(GPU_LAYERS),
     ]
 
     try:
