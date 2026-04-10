@@ -20,14 +20,113 @@ from datetime import datetime
 
 # === CONFIG ===
 HAZEL_DIR = Path.home() / ".hazel"
+CONFIG_FILE = Path(__file__).parent / "config.yaml"
 LLAMA_BIN = Path.home() / "llama.cpp" / "build" / "bin" / "llama-completion"
-MODEL_PATH = Path.home() / "models" / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 HISTORY_FILE = HAZEL_DIR / "history"
 PROMPT_FILE = HAZEL_DIR / "prompt.txt"
+
+# Defaults (overridden by config.yaml)
 MAX_TOKENS = 120
 MAX_TOKENS_DEEP = 300
 TIMEOUT = 30
 TIMEOUT_DEEP = 60
+THREADS = 4
+TEMPERATURE = 0.7
+HUMANIZE = True
+SHOW_RAW = True
+MEMORY_SIZE = 6
+
+# Model paths
+MODEL_TINYLLAMA = Path.home() / "models" / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+MODEL_PHI3 = Path.home() / "models" / "Phi-3-mini-4k-instruct-q4.gguf"
+MODEL_DEFAULT = MODEL_TINYLLAMA
+MODEL_DEEP = MODEL_TINYLLAMA  # Changes to PHI3 if available and configured
+
+
+def load_config():
+    """Load config.yaml and apply settings."""
+    global MAX_TOKENS, MAX_TOKENS_DEEP, TIMEOUT, TIMEOUT_DEEP
+    global THREADS, TEMPERATURE, HUMANIZE, SHOW_RAW, MEMORY_SIZE
+    global MODEL_DEFAULT, MODEL_DEEP
+
+    if not CONFIG_FILE.exists():
+        return
+
+    # Simple YAML parser (no pyyaml dependency needed)
+    config = {}
+    current_section = None
+    try:
+        for line in CONFIG_FILE.read_text().split("\n"):
+            line = line.rstrip()
+            if not line or line.lstrip().startswith("#"):
+                continue
+            # Section header
+            if not line.startswith(" ") and line.endswith(":"):
+                current_section = line[:-1].strip()
+                config[current_section] = {}
+                continue
+            # Key-value
+            if ":" in line and current_section:
+                key, val = line.split(":", 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                # Strip inline comments
+                if "#" in val:
+                    val = val[:val.index("#")].strip()
+                # Type conversion
+                if val.lower() == "true":
+                    val = True
+                elif val.lower() == "false":
+                    val = False
+                elif val.isdigit():
+                    val = int(val)
+                else:
+                    try:
+                        val = float(val)
+                    except ValueError:
+                        pass
+                config[current_section][key] = val
+    except Exception:
+        return
+
+    # Apply config
+    perf = config.get("performance", {})
+    MAX_TOKENS = perf.get("tokens_normal", MAX_TOKENS)
+    MAX_TOKENS_DEEP = perf.get("tokens_deep", MAX_TOKENS_DEEP)
+    TIMEOUT = perf.get("timeout_normal", TIMEOUT)
+    TIMEOUT_DEEP = perf.get("timeout_deep", TIMEOUT_DEEP)
+    THREADS = perf.get("threads", THREADS)
+    TEMPERATURE = perf.get("temperature", TEMPERATURE)
+
+    beh = config.get("behavior", {})
+    HUMANIZE = beh.get("humanize_responses", HUMANIZE)
+    SHOW_RAW = beh.get("show_raw_data", SHOW_RAW)
+    try:
+        MEMORY_SIZE = int(beh.get("conversation_memory", MEMORY_SIZE))
+    except (ValueError, TypeError):
+        pass
+
+    mdl = config.get("model", {})
+    # Resolve model paths
+    if "path_tinyllama" in mdl:
+        p = Path(mdl["path_tinyllama"]).expanduser()
+        if p.exists():
+            global MODEL_TINYLLAMA
+            MODEL_TINYLLAMA = p
+    if "path_phi3" in mdl:
+        p = Path(mdl["path_phi3"]).expanduser()
+        if p.exists():
+            global MODEL_PHI3
+            MODEL_PHI3 = p
+
+    default_model = mdl.get("default", "tinyllama")
+    deep_model = mdl.get("deep", "tinyllama")
+
+    MODEL_DEFAULT = MODEL_PHI3 if default_model == "phi3" and MODEL_PHI3.exists() else MODEL_TINYLLAMA
+    MODEL_DEEP = MODEL_PHI3 if deep_model == "phi3" and MODEL_PHI3.exists() else MODEL_TINYLLAMA
+
+
+load_config()
 
 DEEP_KEYWORDS = [
     "explain", "why", "how does", "how do", "what is", "what are",
@@ -70,9 +169,10 @@ conversation_history = []
 
 def remember(role, content):
     """Store conversation turn for context."""
+    if MEMORY_SIZE == 0:
+        return
     conversation_history.append({"role": role, "content": content})
-    # Keep last 6 turns (3 exchanges)
-    if len(conversation_history) > 6:
+    while len(conversation_history) > MEMORY_SIZE:
         conversation_history.pop(0)
 
 def get_memory_context():
@@ -787,6 +887,43 @@ def handle_instant(query):
     if q in ("shutdown", "power off", "poweroff"):
         return "  COMMAND: sudo shutdown now", True
 
+    # --- Model info ---
+    if q in ("model", "models", "what model", "which model"):
+        lines = [f"  {BD}Models:{X}"]
+        lines.append(f"    Default: {MODEL_DEFAULT.name}")
+        lines.append(f"      {'exists' if MODEL_DEFAULT.exists() else 'NOT FOUND'}")
+        lines.append(f"    Deep thinking: {MODEL_DEEP.name}")
+        lines.append(f"      {'exists' if MODEL_DEEP.exists() else 'NOT FOUND'}")
+        if MODEL_PHI3.exists():
+            lines.append(f"\n    Phi-3 available. Edit config.yaml to use it.")
+        else:
+            lines.append(f"\n    Want smarter answers? Run:")
+            lines.append(f"    {G}download phi3{X}")
+        return "\n".join(lines), "skip"
+
+    # --- Download models ---
+    if q in ("download phi3", "get phi3", "install phi3"):
+        return (
+            f"  Downloading Phi-3 Mini (2.3GB)...\n"
+            f"  COMMAND: wget -q --show-progress -O {MODEL_PHI3} "
+            f"https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf"
+        ), True
+
+    # --- Config ---
+    if q in ("config", "settings", "preferences"):
+        if CONFIG_FILE.exists():
+            lines = [f"  {BD}Config:{X} {CONFIG_FILE}"]
+            lines.append(f"    Model (default): {MODEL_DEFAULT.name}")
+            lines.append(f"    Model (deep): {MODEL_DEEP.name}")
+            lines.append(f"    Tokens (normal/deep): {MAX_TOKENS}/{MAX_TOKENS_DEEP}")
+            lines.append(f"    Timeout (normal/deep): {TIMEOUT}s/{TIMEOUT_DEEP}s")
+            lines.append(f"    Humanize: {HUMANIZE}")
+            lines.append(f"    Show raw data: {SHOW_RAW}")
+            lines.append(f"    Memory turns: {MEMORY_SIZE}")
+            lines.append(f"\n    Edit: {G}! nano {CONFIG_FILE}{X}")
+            return "\n".join(lines), "skip"
+        return f"  No config file found at {CONFIG_FILE}", "skip"
+
     # --- Help ---
     if q in ("help", "?", "commands"):
         return (
@@ -804,6 +941,8 @@ def handle_instant(query):
             f"    update system, reboot, shutdown\n\n"
             f"  {G}Ask anything:{X}\n"
             f"    explain, why, how, what is... (uses AI)\n\n"
+            f"  {G}Config:{X}\n"
+            f"    config, model, download phi3\n\n"
             f"  {G}Power:{X}\n"
             f"    ! <cmd>    Run bash directly\n"
             f"    exit       Quit Hazel"
@@ -851,8 +990,43 @@ def get_llm_context(query):
     return ", ".join(parts)
 
 
+def run_llm(prompt_text, model_path, tokens, timeout, temp=None):
+    """Core LLM runner. Writes prompt to file, calls llama-completion."""
+    HAZEL_DIR.mkdir(exist_ok=True)
+    PROMPT_FILE.write_text(prompt_text)
+
+    t = temp if temp is not None else TEMPERATURE
+    cmd_str = (
+        f'"{LLAMA_BIN}" '
+        f'-m "{model_path}" '
+        f'-f "{PROMPT_FILE}" '
+        f'-n {tokens} '
+        f'-t {THREADS} --temp {t} --top-p 0.9 --no-display-prompt '
+        f'2>/dev/null'
+    )
+
+    try:
+        result = subprocess.run(
+            cmd_str, shell=True,
+            capture_output=True, text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+        text = result.stdout.strip()
+        for tok in ["</s>", "<|user|>", "<|assistant|>", "<|system|>", "> EOF"]:
+            text = text.split(tok)[0]
+        return text.strip() if text.strip() else None
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception as e:
+        return f"[error: {e}]"
+
+
 def humanize(data, query):
     """Make raw data conversational via quick LLM pass."""
+    if not HUMANIZE:
+        return re.sub(r'\033\[[0-9;]*m', '', data).strip()
+
     clean = re.sub(r'\033\[[0-9;]*m', '', data).strip()
 
     prompt = (
@@ -862,17 +1036,10 @@ def humanize(data, query):
         "<|assistant|>\n"
     )
 
-    HAZEL_DIR.mkdir(exist_ok=True)
-    PROMPT_FILE.write_text(prompt)
-
-    cmd_str = (
-        f'"{LLAMA_BIN}" '
-        f'-m "{MODEL_PATH}" '
-        f'-f "{PROMPT_FILE}" '
-        f'-n 60 '
-        f'-t 4 --temp 0.5 --top-p 0.9 --no-display-prompt '
-        f'2>/dev/null'
-    )
+    result = run_llm(prompt, MODEL_DEFAULT, 60, 15, temp=0.5)
+    if result and len(result) > 10:
+        return result
+    return clean
 
     try:
         result = subprocess.run(
@@ -898,10 +1065,11 @@ def is_deep_query(query):
 
 
 def ask_llm(user_input, context):
-    """Query TinyLlama for novel/complex queries."""
+    """Query LLM for novel/complex queries. Uses bigger model for deep queries."""
     deep = is_deep_query(user_input)
     tokens = MAX_TOKENS_DEEP if deep else MAX_TOKENS
     timeout = TIMEOUT_DEEP if deep else TIMEOUT
+    model = MODEL_DEEP if deep else MODEL_DEFAULT
 
     if deep:
         system_msg = (
@@ -925,33 +1093,7 @@ def ask_llm(user_input, context):
         "<|assistant|>\n"
     )
 
-    HAZEL_DIR.mkdir(exist_ok=True)
-    PROMPT_FILE.write_text(prompt)
-
-    cmd_str = (
-        f'"{LLAMA_BIN}" '
-        f'-m "{MODEL_PATH}" '
-        f'-f "{PROMPT_FILE}" '
-        f'-n {tokens} '
-        f'-t 4 --temp 0.7 --top-p 0.9 --no-display-prompt '
-        f'2>/dev/null'
-    )
-
-    try:
-        result = subprocess.run(
-            cmd_str, shell=True,
-            capture_output=True, text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-        text = result.stdout.strip()
-        for tok in ["</s>", "<|user|>", "<|assistant|>", "<|system|>", "> EOF"]:
-            text = text.split(tok)[0]
-        return text.strip() if text.strip() else None
-    except subprocess.TimeoutExpired:
-        return None
-    except Exception as e:
-        return f"[error: {e}]"
+    return run_llm(prompt, model, tokens, timeout)
 
 
 # =============================================
@@ -1108,13 +1250,17 @@ def main():
                 if display:
                     print(f"\n{B}{display}{X}")
             elif display and not commands:
-                sys.stdout.write(f"{D}...{X}")
-                sys.stdout.flush()
-                natural = humanize(display, user_input)
-                sys.stdout.write("\r" + " " * 20 + "\r")
-                sys.stdout.flush()
-                print(f"\n{B}{natural}{X}")
-                print(f"{D}({display.strip()}){X}")
+                if HUMANIZE:
+                    sys.stdout.write(f"{D}...{X}")
+                    sys.stdout.flush()
+                    natural = humanize(display, user_input)
+                    sys.stdout.write("\r" + " " * 20 + "\r")
+                    sys.stdout.flush()
+                    print(f"\n{B}{natural}{X}")
+                    if SHOW_RAW:
+                        print(f"{D}({display.strip()}){X}")
+                else:
+                    print(f"\n{B}{display}{X}")
             elif display:
                 print(f"\n{B}{display}{X}")
 

@@ -65,6 +65,11 @@ if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
 fi
 
+# Copy config if not exists
+if [ ! -f "$HAZEL_BIN/config.yaml" ]; then
+    echo "  Config file not found, this is expected on first install"
+fi
+
 echo "  OK: 'hazel' command installed"
 
 # Desktop shortcut
@@ -106,11 +111,21 @@ EOF
 
 echo "  OK: Hazel will start on login"
 
+# Global hotkey (Super+H)
+echo ""
+echo "  [5/5] Setting up global hotkey..."
+python3 "$HAZEL_BIN/hazel-hotkey.py" 2>/dev/null || echo "  Hotkey setup skipped (configure manually)"
+
 echo ""
 echo "  =============================="
 echo "  Hazel OS installed!"
 echo ""
-echo "  Start now:  hazel"
-echo "  Or click the Hazel icon on your desktop."
+echo "  Start now:     hazel"
+echo "  Hotkey:        Super+H (from anywhere)"
+echo "  Config:        ~/hazel-os/config.yaml"
+echo "  Desktop icon:  On your desktop"
+echo ""
+echo "  Optional: Download smarter model (2.3GB):"
+echo "    hazel, then type: download phi3"
 echo "  =============================="
 echo ""

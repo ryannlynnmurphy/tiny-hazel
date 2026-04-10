@@ -1,0 +1,32 @@
+# Hazel OS Configuration
+# Edit this file to customize Hazel's behavior.
+
+# === Models ===
+# Available: tinyllama (fast, basic), phi3 (slower, smarter)
+# To use phi3, run: hazel --download-phi3
+model:
+  default: tinyllama
+  deep: tinyllama  # Change to "phi3" after downloading
+  path_tinyllama: ~/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+  path_phi3: ~/models/Phi-3-mini-4k-instruct-q4.gguf
+
+# === Performance ===
+performance:
+  tokens_normal: 120
+  tokens_deep: 300
+  timeout_normal: 30
+  timeout_deep: 60
+  threads: 4
+  temperature: 0.7
+
+# === Behavior ===
+behavior:
+  humanize_responses: true  # Route instant data through LLM for natural speech
+  show_raw_data: true       # Show raw numbers under humanized response
+  first_boot_welcome: true
+  conversation_memory: 6    # Number of turns to remember (0 to disable)
+
+# === Hotkey ===
+hotkey:
+  enabled: true
+  key: "Super_L-h"  # Super+H to open Hazel from anywhere

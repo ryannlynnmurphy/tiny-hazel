@@ -18,7 +18,13 @@ def main():
     hazel_cmd = os.path.expanduser("~/.local/bin/hazel")
     terminal_cmd = f"x-terminal-emulator -e {hazel_cmd}"
 
-    # Check if labwc config exists (Raspberry Pi OS default on Bookworm+)
+    # Copy system config to user config if needed
+    system_rc = "/etc/xdg/labwc/rc.xml"
+    if not os.path.exists(rc_path) and os.path.exists(system_rc):
+        os.makedirs(config_dir, exist_ok=True)
+        import shutil
+        shutil.copy2(system_rc, rc_path)
+
     if os.path.exists(rc_path):
         with open(rc_path, "r") as f:
             content = f.read()
