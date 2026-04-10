@@ -1987,6 +1987,36 @@ def main():
             print()
             continue
 
+        # === Check if it's a file/folder name before LLM ===
+        # If someone just types a word, check if it matches something on their machine
+        if len(user_input.split()) <= 2 and not is_deep_query(user_input):
+            home = Path.home()
+            # Check folders first
+            for d in home.iterdir():
+                if d.is_dir() and d.name.lower() == user_input.lower():
+                    result = open_file(str(d))
+                    print(f"\n{B}  Opened folder: {d.name}/{X}\n")
+                    remember("user", user_input)
+                    remember("hazel", f"Opened folder {d.name}")
+                    break
+            else:
+                # Check for file matches
+                matches = find_file(user_input)
+                if matches and len(matches) <= 5:
+                    lines = [f"  Found {len(matches)} match(es) for '{user_input}':"]
+                    for rel, size in matches[:5]:
+                        lines.append(f"    ~/{rel}  ({format_size(size)})")
+                    if len(matches) == 1:
+                        full_path = home / matches[0][0]
+                        open_file(str(full_path))
+                        lines.append(f"\n  Opened: {matches[0][0]}")
+                    else:
+                        lines.append(f"\n  Say 'open <filename>' to open one.")
+                    print(f"\n{B}" + "\n".join(lines) + f"{X}\n")
+                    remember("user", user_input)
+                    remember("hazel", f"Found files matching {user_input}")
+                    continue
+
         # === Fall back to LLM ===
         deep = is_deep_query(user_input)
         if deep:
