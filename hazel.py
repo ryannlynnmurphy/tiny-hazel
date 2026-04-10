@@ -23,8 +23,20 @@ LLAMA_BIN = Path.home() / "llama.cpp" / "build" / "bin" / "llama-completion"
 MODEL_PATH = Path.home() / "models" / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 HISTORY_FILE = HAZEL_DIR / "history"
 PROMPT_FILE = HAZEL_DIR / "prompt.txt"
-MAX_TOKENS = 80
+MAX_TOKENS = 120
+MAX_TOKENS_DEEP = 300
 TIMEOUT = 30
+TIMEOUT_DEEP = 60
+
+# Keywords that trigger deep thinking (more tokens, more time)
+DEEP_KEYWORDS = [
+    "explain", "why", "how does", "how do", "what is", "what are",
+    "teach", "learn", "understand", "describe", "compare",
+    "difference between", "help me understand", "tell me about",
+    "write", "create", "build", "design", "plan",
+    "debug", "fix", "solve", "troubleshoot", "diagnose",
+    "analyze", "review", "evaluate",
+]
 
 # === COLORS ===
 G = "\033[92m"   # green (hazel accent)
@@ -319,13 +331,35 @@ def get_llm_context(query):
     return ", ".join(parts)
 
 
+def is_deep_query(query):
+    """Check if query needs extended thinking."""
+    q = query.lower()
+    return any(kw in q for kw in DEEP_KEYWORDS)
+
+
 def ask_llm(user_input, context):
     """Query TinyLlama. Only used for questions instant handler can't answer."""
+    deep = is_deep_query(user_input)
+    tokens = MAX_TOKENS_DEEP if deep else MAX_TOKENS
+    timeout = TIMEOUT_DEEP if deep else TIMEOUT
+
+    if deep:
+        system_msg = (
+            "You are Hazel, a knowledgeable computer assistant on a Raspberry Pi 5. "
+            "Give thorough, complete answers. Finish your sentences. "
+            "Use the data provided when relevant. "
+            "To suggest a bash command write COMMAND: <cmd>"
+        )
+    else:
+        system_msg = (
+            "You are Hazel, a computer assistant on a Raspberry Pi 5. "
+            "Give short, helpful answers. Finish your sentences. "
+            "Use the data provided. "
+            "To suggest a bash command write COMMAND: <cmd>"
+        )
+
     prompt = (
-        "<|system|>\n"
-        "You are Hazel, a computer assistant on a Raspberry Pi 5. "
-        "Give short, helpful answers. Use the data provided. "
-        "To suggest a bash command write COMMAND: <cmd>\n"
+        f"<|system|>\n{system_msg}\n"
         f"System: {context}</s>\n"
         f"<|user|>\n{user_input}</s>\n"
         "<|assistant|>\n"
@@ -338,7 +372,7 @@ def ask_llm(user_input, context):
         f'"{LLAMA_BIN}" '
         f'-m "{MODEL_PATH}" '
         f'-f "{PROMPT_FILE}" '
-        f'-n {MAX_TOKENS} '
+        f'-n {tokens} '
         f'-t 4 --temp 0.7 --top-p 0.9 --no-display-prompt '
         f'2>/dev/null'
     )
@@ -347,7 +381,7 @@ def ask_llm(user_input, context):
         result = subprocess.run(
             cmd_str, shell=True,
             capture_output=True, text=True,
-            timeout=TIMEOUT,
+            timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
         text = result.stdout.strip()
@@ -500,7 +534,11 @@ def main():
             continue
 
         # === Fall back to LLM ===
-        sys.stdout.write(f"{D}thinking...{X}")
+        deep = is_deep_query(user_input)
+        if deep:
+            sys.stdout.write(f"{D}thinking deeply...{X}")
+        else:
+            sys.stdout.write(f"{D}thinking...{X}")
         sys.stdout.flush()
 
         context = get_llm_context(user_input)
