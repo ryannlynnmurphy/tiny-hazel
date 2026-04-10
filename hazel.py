@@ -199,12 +199,29 @@ def sys_cpu():
     return {"cpu_percent": pct, "cpu_cores": psutil.cpu_count(), "cpu_mhz": mhz}
 
 def sys_temp():
+    # Pi
     try:
         r = subprocess.run(["vcgencmd", "measure_temp"],
                           capture_output=True, text=True, timeout=2)
         return float(r.stdout.strip().split("=")[1].split("'")[0])
+    except (FileNotFoundError, Exception):
+        pass
+    # Linux thermal zone
+    try:
+        temps = psutil.sensors_temperatures()
+        if temps:
+            for name, entries in temps.items():
+                if entries:
+                    return round(entries[0].current, 1)
     except Exception:
-        return None
+        pass
+    # macOS
+    try:
+        r = subprocess.run(["osx-cpu-temp"], capture_output=True, text=True, timeout=2)
+        return float(r.stdout.strip().split("°")[0])
+    except (FileNotFoundError, Exception):
+        pass
+    return None
 
 def sys_mem():
     m = psutil.virtual_memory()
@@ -402,6 +419,68 @@ def sys_kernel():
         "os": platform.platform(),
         "arch": platform.machine(),
     }
+
+def sys_gpu():
+    """Detect GPU(s)."""
+    gpus = []
+    # NVIDIA
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.free,temperature.gpu,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in r.stdout.strip().split("\n"):
+            if line.strip():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 5:
+                    gpus.append({
+                        "name": parts[0],
+                        "vram_total_mb": parts[1],
+                        "vram_free_mb": parts[2],
+                        "temp_c": parts[3],
+                        "usage_pct": parts[4],
+                        "type": "nvidia",
+                    })
+    except (FileNotFoundError, Exception):
+        pass
+
+    # AMD (ROCm)
+    try:
+        r = subprocess.run(
+            ["rocm-smi", "--showproductname", "--showmeminfo", "vram", "--showtemp"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            gpus.append({"name": "AMD GPU (ROCm)", "raw": r.stdout.strip()[:200], "type": "amd"})
+    except (FileNotFoundError, Exception):
+        pass
+
+    # Raspberry Pi VideoCore
+    try:
+        r = subprocess.run(["vcgencmd", "measure_clock", "v3d"],
+                          capture_output=True, text=True, timeout=2)
+        if r.returncode == 0:
+            freq = int(r.stdout.strip().split("=")[1]) // 1000000
+            gpus.append({"name": "VideoCore VII", "clock_mhz": freq, "type": "videocore"})
+    except (FileNotFoundError, Exception):
+        pass
+
+    # macOS Metal
+    try:
+        r = subprocess.run(["system_profiler", "SPDisplaysDataType"],
+                          capture_output=True, text=True, timeout=5)
+        for line in r.stdout.split("\n"):
+            if "Chipset Model" in line:
+                name = line.split(":")[1].strip()
+                gpus.append({"name": name, "type": "metal"})
+            elif "VRAM" in line:
+                if gpus:
+                    gpus[-1]["vram"] = line.split(":")[1].strip()
+    except (FileNotFoundError, Exception):
+        pass
+
+    return gpus
 
 
 # =============================================
@@ -830,22 +909,55 @@ def handle_instant(query):
     if re.search(r"(uptime|how long|when.*(boot|start))", q):
         return f"  Uptime: {sys_uptime()}", False
 
-    # --- Pi hardware info ---
+    # --- Hardware info ---
     if re.search(r"(hardware|board|model|pi info|about this|what (computer|pi|device)|specs)", q):
         pi = sys_pi_info()
         k = sys_kernel()
-        lines = ["  Raspberry Pi Hardware:"]
+        c = sys_cpu()
+        m = sys_mem()
+        gpus = sys_gpu()
+
+        lines = ["  Hardware:"]
         if "model" in pi:
             lines.append(f"    Model: {pi['model']}")
+        lines.append(f"    OS: {k['os']}")
         lines.append(f"    Kernel: {k['kernel']}")
         lines.append(f"    Arch: {k['arch']}")
+        lines.append(f"    CPU: {c['cpu_cores']} cores, {c['cpu_mhz']} MHz")
+        lines.append(f"    RAM: {m['ram_total_gb']}GB")
         if "throttled" in pi:
             lines.append(f"    Throttled: {pi['throttled']}")
         if "voltage" in pi:
             lines.append(f"    Voltage: {pi['voltage']}")
-        if "arm_clock_mhz" in pi:
-            lines.append(f"    ARM Clock: {pi['arm_clock_mhz']} MHz")
+        if gpus:
+            for g in gpus:
+                gpu_str = f"    GPU: {g['name']}"
+                if "vram_total_mb" in g:
+                    gpu_str += f" ({g['vram_total_mb']}MB VRAM)"
+                elif "vram" in g:
+                    gpu_str += f" ({g['vram']})"
+                lines.append(gpu_str)
         return "\n".join(lines), False
+
+    # --- GPU ---
+    if re.search(r"(gpu|graphics|video card|nvidia|amd|radeon|metal|cuda)", q):
+        gpus = sys_gpu()
+        if gpus:
+            lines = [f"  GPU ({len(gpus)}):"]
+            for g in gpus:
+                lines.append(f"    {g['name']}")
+                if "vram_total_mb" in g:
+                    lines.append(f"      VRAM: {g['vram_free_mb']}MB free / {g['vram_total_mb']}MB")
+                if "temp_c" in g:
+                    lines.append(f"      Temp: {g['temp_c']}C")
+                if "usage_pct" in g:
+                    lines.append(f"      Usage: {g['usage_pct']}%")
+                if "vram" in g:
+                    lines.append(f"      VRAM: {g['vram']}")
+                if "clock_mhz" in g:
+                    lines.append(f"      Clock: {g['clock_mhz']} MHz")
+            return "\n".join(lines), False
+        return "  No GPU detected (or no drivers installed).", "skip"
 
     # --- USB devices ---
     if re.search(r"(usb|plugged|connected device|peripheral)", q):
@@ -1315,13 +1427,33 @@ def execute_commands(commands):
 # PART 8: MAIN INTERFACE
 # =============================================
 
+FACES = {
+    "cool": "(^_^)",
+    "warm": "(o_o)",
+    "hot": "(>_<)",
+    "happy": "(^-^)",
+    "thinking": "(-_-)",
+    "greeting": "(~_^)",
+}
+
+def get_face():
+    """Hazel's mood based on system state."""
+    t = sys_temp()
+    if t is None:
+        return FACES["happy"]
+    if t < 50:
+        return FACES["cool"]
+    elif t < 65:
+        return FACES["warm"]
+    else:
+        return FACES["hot"]
+
 def banner():
+    face = get_face()
     print(f"""
-{BD}{G}  _   _               _
- | | | | __ _ ______| |
- | |_| |/ _` |_  / _` |
- |  _  | (_| |/ /  __/ |
- |_| |_|\\__,_/___\\___|_|{X}
+{BD}{G}  ╦ ╦╔═╗╔═╗╔═╗╦
+  ╠═╣╠═╣╔═╝║╣ ║
+  ╩ ╩╩ ╩╚═╝╚═╝╩═╝{X}  {face}
  {D}{sys_overview()}
  Type 'help' for commands. '!' for bash.{X}
 """)
@@ -1334,10 +1466,10 @@ def first_boot():
         return
     marker.touch()
     print(f"""
-{BD}{G}  Welcome to Hazel OS!{X}
+{BD}{G}  Welcome to Hazel! {FACES['greeting']}{X}
 
   I'm Hazel, your local AI assistant.
-  I run entirely on this Raspberry Pi - no cloud, no tracking.
+  I run entirely on this machine - no cloud, no tracking.
 
   Try asking me:
     {G}status{X}          - see how your system is doing

@@ -1,12 +1,20 @@
-# Hazel OS
+# Hazel
 
-**A Raspberry Pi that speaks your language.**
+**Your computer, in your language.**
 
-Local AI assistant powered by TinyLlama. No cloud. No telemetry. Yours.
+Local AI terminal assistant powered by TinyLlama. No cloud. No telemetry. Yours.
+
+Runs on: Linux, macOS, Raspberry Pi, WSL.
+
+## Install (one line)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/ryannlynnmurphy/tiny-hazel/main/install-universal.sh | bash
+```
 
 ## What it does
 
-Hazel is a natural language interface to your Raspberry Pi. Instead of memorizing terminal commands, just ask.
+Hazel is a natural language interface to your computer. Instead of memorizing terminal commands, just ask.
 
 ```
 hazel> how much disk space do I have?
@@ -52,22 +60,30 @@ User query
 
 ## Requirements
 
-- Raspberry Pi 5 (4GB or 8GB RAM)
-- 64GB+ SD card
-- Raspberry Pi OS (64-bit)
+- Any Linux, macOS, Raspberry Pi, or WSL
+- 2GB+ RAM (4GB recommended)
+- 1GB free disk space (for model)
+- Python 3.8+
+
+Works great on: laptops, desktops, Raspberry Pi 4/5, cloud VMs, old Thinkpads.
 
 ## Install
 
+**One-liner (recommended):**
 ```bash
-# Clone
-git clone https://github.com/ryannlynnmurphy/tiny-hazel.git
-cd tiny-hazel
+curl -sSL https://raw.githubusercontent.com/ryannlynnmurphy/tiny-hazel/main/install-universal.sh | bash
+```
 
-# Install (compiles llama.cpp, downloads TinyLlama model)
-chmod +x install.sh
-./install.sh
+**Manual:**
+```bash
+git clone https://github.com/ryannlynnmurphy/tiny-hazel.git ~/hazel-os
+cd ~/hazel-os
+chmod +x install-universal.sh
+./install-universal.sh
+```
 
-# Run
+**Run:**
+```bash
 hazel
 ```
 
@@ -81,9 +97,13 @@ hazel
 | `cpu` | CPU usage |
 | `memory` | RAM usage |
 | `disk` | Disk space |
+| `gpu` | GPU info (NVIDIA, AMD, Metal, VideoCore) |
 | `network` | IP addresses, internet status |
+| `hardware` | Full hardware specs |
 | `uptime` | How long since boot |
 | `top` | Running processes |
+| `usb` | Connected USB devices |
+| `errors` | Failed system services |
 
 ### Files
 | Command | What it does |
@@ -122,6 +142,25 @@ hazel> why is my system slow
 hazel> write a python script to rename files
 hazel> what is the difference between TCP and UDP
 ```
+
+### Learn
+| Command | What it does |
+|---------|-------------|
+| `tutorial` | List available tutorials |
+| `tutorial permissions` | Learn file permissions (chmod) |
+| `tutorial files` | Learn to find files |
+| `tutorial processes` | Learn process management |
+| `tutorial networking` | Learn networking basics |
+| `tutorial gpio` | Learn Raspberry Pi GPIO |
+| `tutorial pi` | Explore your Pi hardware |
+| `teach me <topic>` | Same as tutorial |
+
+### Config
+| Command | What it does |
+|---------|-------------|
+| `config` | Show current settings |
+| `model` | Show installed models |
+| `download phi3` | Download smarter model (2.3GB) |
 
 ### Power User
 | Command | What it does |
