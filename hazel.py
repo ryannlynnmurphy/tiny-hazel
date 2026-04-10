@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Hazel OS - A Raspberry Pi that speaks your language.
-Local LLM shell powered by TinyLlama.
+Hazel OS - Your local computer AI assistant.
+Runs on Raspberry Pi. No cloud. No telemetry. Yours.
 """
 
 import subprocess
@@ -13,28 +13,357 @@ import psutil
 import socket
 import time
 import readline
+import shutil
 from pathlib import Path
+from datetime import datetime
 
 # === CONFIG ===
 HAZEL_DIR = Path.home() / ".hazel"
 LLAMA_BIN = Path.home() / "llama.cpp" / "build" / "bin" / "llama-completion"
 MODEL_PATH = Path.home() / "models" / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
 HISTORY_FILE = HAZEL_DIR / "history"
-MAX_RESPONSE_TOKENS = 80
-TIMEOUT = 45
+PROMPT_FILE = HAZEL_DIR / "prompt.txt"
+MAX_TOKENS = 80
+TIMEOUT = 30
 
-# Colors
-C = {
-    "g": "\033[92m",  # green
-    "b": "\033[94m",  # blue
-    "y": "\033[93m",  # yellow
-    "r": "\033[91m",  # red
-    "d": "\033[2m",   # dim
-    "B": "\033[1m",   # bold
-    "x": "\033[0m",   # reset
-}
+# === COLORS ===
+G = "\033[92m"   # green (hazel accent)
+B = "\033[94m"   # blue (responses)
+Y = "\033[93m"   # yellow (warnings)
+R = "\033[91m"   # red (errors)
+D = "\033[2m"    # dim
+BD = "\033[1m"   # bold
+X = "\033[0m"    # reset
 
-# Dangerous command patterns
+
+# =============================================
+# PART 1: SYSTEM READING (grounding layer)
+# =============================================
+
+def sys_cpu():
+    pct = psutil.cpu_percent(interval=0.3)
+    freq = psutil.cpu_freq()
+    mhz = round(freq.current) if freq else "?"
+    return {"cpu_percent": pct, "cpu_cores": psutil.cpu_count(), "cpu_mhz": mhz}
+
+def sys_temp():
+    try:
+        r = subprocess.run(["vcgencmd", "measure_temp"],
+                          capture_output=True, text=True, timeout=2)
+        return float(r.stdout.strip().split("=")[1].split("'")[0])
+    except Exception:
+        return None
+
+def sys_mem():
+    m = psutil.virtual_memory()
+    return {
+        "ram_total_gb": round(m.total / 1e9, 1),
+        "ram_free_gb": round(m.available / 1e9, 1),
+        "ram_percent": m.percent,
+    }
+
+def sys_disk():
+    d = psutil.disk_usage("/")
+    return {
+        "disk_total_gb": round(d.total / 1e9, 1),
+        "disk_free_gb": round(d.free / 1e9, 1),
+        "disk_percent": round(d.percent, 1),
+    }
+
+def sys_net():
+    info = {}
+    for iface, addrs in psutil.net_if_addrs().items():
+        if iface == "lo":
+            continue
+        for a in addrs:
+            if a.family == socket.AF_INET:
+                info[iface] = a.address
+    try:
+        socket.create_connection(("1.1.1.1", 53), timeout=2)
+        info["internet"] = True
+    except OSError:
+        info["internet"] = False
+    return info
+
+def sys_procs(n=5):
+    procs = sorted(
+        psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]),
+        key=lambda p: p.info.get("cpu_percent") or 0,
+        reverse=True,
+    )[:n]
+    return [
+        {"name": p.info["name"], "pid": p.info["pid"],
+         "cpu": p.info.get("cpu_percent", 0),
+         "mem": round(p.info.get("memory_percent", 0), 1)}
+        for p in procs
+    ]
+
+def sys_uptime():
+    s = time.time() - psutil.boot_time()
+    h, m = int(s // 3600), int((s % 3600) // 60)
+    return f"{h}h {m}m"
+
+def sys_dirs():
+    home = Path.home()
+    return sorted([
+        d.name for d in home.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    ])
+
+def sys_overview():
+    """Quick one-line system summary."""
+    t = sys_temp()
+    c = sys_cpu()
+    m = sys_mem()
+    d = sys_disk()
+    temp_str = f"{t}C" if t else "?"
+    return (
+        f"CPU {c['cpu_percent']}% | {temp_str} | "
+        f"RAM {m['ram_free_gb']}GB free | "
+        f"Disk {d['disk_free_gb']}GB free"
+    )
+
+
+# =============================================
+# PART 2: INSTANT COMMANDS (no LLM needed)
+# =============================================
+
+def handle_instant(query):
+    """
+    Pattern-match common queries and answer instantly.
+    Returns (response_string, ran_command) or None if no match.
+    """
+    q = query.lower().strip()
+
+    # --- System status ---
+    if q in ("status", "stats", "system", "overview"):
+        c = sys_cpu()
+        m = sys_mem()
+        d = sys_disk()
+        t = sys_temp()
+        n = sys_net()
+        u = sys_uptime()
+        net_str = ", ".join(f"{k}={v}" for k, v in n.items())
+        return (
+            f"  CPU:     {c['cpu_percent']}% ({c['cpu_cores']} cores, {c['cpu_mhz']} MHz)\n"
+            f"  Temp:    {t}C\n"
+            f"  RAM:     {m['ram_free_gb']}GB free / {m['ram_total_gb']}GB ({m['ram_percent']}% used)\n"
+            f"  Disk:    {d['disk_free_gb']}GB free / {d['disk_total_gb']}GB ({d['disk_percent']}% used)\n"
+            f"  Network: {net_str}\n"
+            f"  Uptime:  {u}"
+        ), False
+
+    # --- Temperature ---
+    if any(w in q for w in ["temp", "hot", "warm", "cool", "thermal"]) and "cpu" in q or q in ("temp", "temperature"):
+        t = sys_temp()
+        if t is not None:
+            if t < 50:
+                status = "cool, running great"
+            elif t < 65:
+                status = "warm, normal under load"
+            elif t < 75:
+                status = "getting hot, might throttle soon"
+            else:
+                status = "too hot! check cooling"
+            return f"  CPU temperature: {t}C ({status})", False
+        return "  Couldn't read temperature.", False
+
+    # --- Disk ---
+    if re.search(r"(disk|storage|space|how (much|many).*(free|left|space|storage))", q):
+        d = sys_disk()
+        return (
+            f"  Disk: {d['disk_free_gb']}GB free out of {d['disk_total_gb']}GB\n"
+            f"  {d['disk_percent']}% used"
+        ), False
+
+    # --- Memory ---
+    if re.search(r"(ram|memory|mem)", q):
+        m = sys_mem()
+        return (
+            f"  RAM: {m['ram_free_gb']}GB free out of {m['ram_total_gb']}GB\n"
+            f"  {m['ram_percent']}% used"
+        ), False
+
+    # --- CPU ---
+    if re.search(r"cpu.*(usage|percent|load|busy)", q) or q == "cpu":
+        c = sys_cpu()
+        t = sys_temp()
+        return (
+            f"  CPU: {c['cpu_percent']}% usage\n"
+            f"  {c['cpu_cores']} cores at {c['cpu_mhz']} MHz\n"
+            f"  Temperature: {t}C"
+        ), False
+
+    # --- IP / Network ---
+    if re.search(r"(ip|address|network|wifi|internet|online|connected)", q):
+        n = sys_net()
+        lines = []
+        for k, v in n.items():
+            if k == "internet":
+                lines.append(f"  Internet: {'connected' if v else 'not connected'}")
+            else:
+                lines.append(f"  {k}: {v}")
+        return "\n".join(lines) if lines else "  No network interfaces found.", False
+
+    # --- Uptime ---
+    if re.search(r"(uptime|how long|when.*(boot|start))", q):
+        return f"  Uptime: {sys_uptime()}", False
+
+    # --- Processes ---
+    if re.search(r"(process|running|what.*(running|open)|top)", q):
+        procs = sys_procs(8)
+        lines = ["  PID    CPU%  MEM%  Name"]
+        lines.append("  " + "-" * 35)
+        for p in procs:
+            lines.append(f"  {p['pid']:<6} {p['cpu']:<5} {p['mem']:<5} {p['name']}")
+        return "\n".join(lines), False
+
+    # --- Files / folders ---
+    if re.search(r"(show|list|my).*(file|folder|dir|document)", q) or q in ("ls", "files", "folders"):
+        dirs = sys_dirs()
+        d = sys_disk()
+        lines = [f"  Home folders ({len(dirs)}):"]
+        for name in dirs:
+            lines.append(f"    {name}/")
+        lines.append(f"\n  Disk: {d['disk_free_gb']}GB free")
+        return "\n".join(lines), False
+
+    # --- Date/time ---
+    if re.search(r"(time|date|day|today|what day)", q):
+        now = datetime.now()
+        return f"  {now.strftime('%A, %B %d, %Y at %I:%M %p')}", False
+
+    # --- Help ---
+    if q in ("help", "?", "commands"):
+        return (
+            f"  {BD}Hazel OS - What I can do{X}\n\n"
+            f"  {G}Ask naturally:{X}\n"
+            f"    \"how much disk space do I have?\"\n"
+            f"    \"what's my IP address?\"\n"
+            f"    \"show me running processes\"\n"
+            f"    \"why is the system slow?\"\n"
+            f"    \"explain what chmod does\"\n"
+            f"    \"install htop\"\n\n"
+            f"  {G}Quick commands:{X}\n"
+            f"    status     System overview\n"
+            f"    files      List home folders\n"
+            f"    temp       CPU temperature\n"
+            f"    top        Running processes\n\n"
+            f"  {G}Power:{X}\n"
+            f"    ! <cmd>    Run bash directly\n"
+            f"    exit       Quit Hazel"
+        ), False
+
+    # --- Install package ---
+    m = re.match(r"install\s+(\S+)", q)
+    if m:
+        pkg = m.group(1)
+        return f"  To install {pkg}:\n  COMMAND: sudo apt install -y {pkg}", True
+
+    # --- Update system ---
+    if re.search(r"(update|upgrade).*(system|packages|apt|software)", q):
+        return "  Updating package list and upgrading:\n  COMMAND: sudo apt update && sudo apt upgrade -y", True
+
+    # --- Kill process ---
+    m = re.match(r"kill\s+(\S+)", q)
+    if m:
+        target = m.group(1)
+        if target.isdigit():
+            return f"  COMMAND: kill {target}", True
+        else:
+            return f"  COMMAND: pkill {target}", True
+
+    # --- Reboot ---
+    if q in ("reboot", "restart"):
+        return "  COMMAND: sudo reboot", True
+
+    # --- Shutdown ---
+    if q in ("shutdown", "power off", "poweroff"):
+        return "  COMMAND: sudo shutdown now", True
+
+    return None
+
+
+# =============================================
+# PART 3: LLM (for novel/complex queries)
+# =============================================
+
+def get_llm_context(query):
+    """Build compact context string for LLM."""
+    q = query.lower()
+    parts = [f"host={socket.gethostname()}"]
+
+    if any(w in q for w in ["cpu", "slow", "fast", "performance"]):
+        c = sys_cpu()
+        parts.append(f"cpu={c['cpu_percent']}%")
+        t = sys_temp()
+        if t:
+            parts.append(f"temp={t}C")
+    if any(w in q for w in ["mem", "ram"]):
+        m = sys_mem()
+        parts.append(f"ram={m['ram_free_gb']}GB/{m['ram_total_gb']}GB")
+    if any(w in q for w in ["disk", "space", "storage"]):
+        d = sys_disk()
+        parts.append(f"disk={d['disk_free_gb']}GB/{d['disk_total_gb']}GB")
+
+    # For general queries, add overview
+    if len(parts) <= 1:
+        t = sys_temp()
+        c = sys_cpu()
+        m = sys_mem()
+        parts.append(f"cpu={c['cpu_percent']}%")
+        if t:
+            parts.append(f"temp={t}C")
+        parts.append(f"ram={m['ram_free_gb']}GB free")
+
+    return ", ".join(parts)
+
+
+def ask_llm(user_input, context):
+    """Query TinyLlama. Only used for questions instant handler can't answer."""
+    prompt = (
+        "<|system|>\n"
+        "You are Hazel, a computer assistant on a Raspberry Pi 5. "
+        "Give short, helpful answers. Use the data provided. "
+        "To suggest a bash command write COMMAND: <cmd>\n"
+        f"System: {context}</s>\n"
+        f"<|user|>\n{user_input}</s>\n"
+        "<|assistant|>\n"
+    )
+
+    HAZEL_DIR.mkdir(exist_ok=True)
+    PROMPT_FILE.write_text(prompt)
+
+    cmd_str = (
+        f'"{LLAMA_BIN}" '
+        f'-m "{MODEL_PATH}" '
+        f'-f "{PROMPT_FILE}" '
+        f'-n {MAX_TOKENS} '
+        f'-t 4 --temp 0.7 --top-p 0.9 --no-display-prompt '
+        f'2>/dev/null'
+    )
+
+    try:
+        result = subprocess.run(
+            cmd_str, shell=True,
+            capture_output=True, text=True,
+            timeout=TIMEOUT,
+            stdin=subprocess.DEVNULL,
+        )
+        text = result.stdout.strip()
+        for tok in ["</s>", "<|user|>", "<|assistant|>", "<|system|>", "> EOF"]:
+            text = text.split(tok)[0]
+        return text.strip() if text.strip() else None
+    except subprocess.TimeoutExpired:
+        return None
+    except Exception as e:
+        return f"[error: {e}]"
+
+
+# =============================================
+# PART 4: COMMAND EXECUTION + SAFETY
+# =============================================
+
 DANGEROUS = [
     r"rm\s+(-\w*[rf]|--recursive|--force)",
     r"\bmkfs\b", r"\bdd\b\s.*of=", r"\bshutdown\b",
@@ -43,223 +372,89 @@ DANGEROUS = [
 ]
 
 
-# === SYSTEM READING ===
-
-def read_cpu():
-    pct = psutil.cpu_percent(interval=0.3)
-    try:
-        r = subprocess.run(["vcgencmd", "measure_temp"],
-                          capture_output=True, text=True, timeout=2)
-        temp = r.stdout.strip().split("=")[1].split("'")[0]
-    except Exception:
-        temp = "?"
-    return f"cpu={pct}% temp={temp}C cores={psutil.cpu_count()}"
-
-
-def read_mem():
-    m = psutil.virtual_memory()
-    return f"ram={round(m.available/1e9,1)}GB free of {round(m.total/1e9,1)}GB ({m.percent}% used)"
-
-
-def read_disk():
-    d = psutil.disk_usage("/")
-    return f"disk={round(d.free/1e9,1)}GB free of {round(d.total/1e9,1)}GB ({round(d.percent)}% used)"
-
-
-def read_net():
-    parts = []
-    for iface, addrs in psutil.net_if_addrs().items():
-        if iface == "lo":
-            continue
-        for a in addrs:
-            if a.family == socket.AF_INET:
-                parts.append(f"{iface}={a.address}")
-    try:
-        socket.create_connection(("1.1.1.1", 53), timeout=2)
-        parts.append("internet=yes")
-    except OSError:
-        parts.append("internet=no")
-    return " ".join(parts) if parts else "no network"
-
-
-def read_procs():
-    procs = sorted(
-        psutil.process_iter(["name", "cpu_percent"]),
-        key=lambda p: p.info.get("cpu_percent") or 0,
-        reverse=True,
-    )[:3]
-    return " ".join(
-        f"{p.info['name']}={p.info.get('cpu_percent',0)}%"
-        for p in procs
-    )
-
-
-def read_dirs():
-    home = Path.home()
-    dirs = sorted([
-        d.name for d in home.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
-    ])
-    return "folders: " + ", ".join(dirs[:10])
-
-
-def read_uptime():
-    s = time.time() - psutil.boot_time()
-    h, m = int(s // 3600), int((s % 3600) // 60)
-    return f"uptime={h}h{m}m"
-
-
-def get_context(query):
-    """Build minimal context string based on query topic."""
-    q = query.lower()
-    parts = [f"host={socket.gethostname()}"]
-
-    if any(w in q for w in ["cpu", "slow", "fast", "hot", "temp", "warm", "performance", "speed"]):
-        parts.append(read_cpu())
-        parts.append(read_procs())
-    elif any(w in q for w in ["mem", "ram", "swap"]):
-        parts.append(read_mem())
-    elif any(w in q for w in ["disk", "storage", "space", "full"]):
-        parts.append(read_disk())
-    elif any(w in q for w in ["net", "wifi", "internet", "ip", "connect", "online"]):
-        parts.append(read_net())
-    elif any(w in q for w in ["file", "folder", "dir", "document", "show", "list"]):
-        parts.append(read_dirs())
-        parts.append(read_disk())
-    elif any(w in q for w in ["process", "running", "kill", "what", "app"]):
-        parts.append(read_procs())
-        parts.append(read_cpu())
-        parts.append(read_mem())
-    elif any(w in q for w in ["uptime", "boot", "long", "when"]):
-        parts.append(read_uptime())
-    else:
-        # General query - give overview
-        parts.append(read_cpu())
-        parts.append(read_mem())
-        parts.append(read_disk())
-
-    return ". ".join(parts)
-
-
-# === LLM ===
-
-def ask_llm(user_input, context):
-    """Query TinyLlama with grounded context."""
-    prompt = (
-        "<|system|>\n"
-        "You are Hazel, a friendly AI assistant running on a Raspberry Pi 5. "
-        "Answer using ONLY the facts below. Never invent hardware specs. Be concise.\n"
-        f"{context}</s>\n"
-        f"<|user|>\n{user_input}</s>\n"
-        "<|assistant|>\n"
-    )
-
-    # Write prompt to file (avoids shell escaping issues with -p)
-    prompt_file = HAZEL_DIR / "prompt.txt"
-    prompt_file.write_text(prompt)
-
-    try:
-        # Use shell=True with explicit command string to avoid argument issues
-        cmd_str = (
-            f'"{LLAMA_BIN}" '
-            f'-m "{MODEL_PATH}" '
-            f'-f "{prompt_file}" '
-            f'-n {MAX_RESPONSE_TOKENS} '
-            f'-t 4 --temp 0.7 --top-p 0.9 --no-display-prompt '
-            f'2>/dev/null'
-        )
-        result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True, timeout=TIMEOUT, stdin=subprocess.DEVNULL)
-        text = result.stdout.strip()
-        # Cut at any special token
-        for tok in ["</s>", "<|user|>", "<|assistant|>", "<|system|>", "> EOF"]:
-            text = text.split(tok)[0]
-        if not text and result.stderr:
-            return f"[llm stderr: {result.stderr[:200]}]"
-        return text.strip()
-    except subprocess.TimeoutExpired:
-        return None
-    except Exception as e:
-        return f"[error: {e}]"
-
-
-# === COMMAND HANDLING ===
-
-def extract_commands(text):
-    """Find COMMAND: lines in LLM response."""
-    cmds = []
-    clean_lines = []
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if stripped.upper().startswith("COMMAND:"):
-            cmd = stripped[8:].strip().strip("`").strip()
-            if cmd:
-                cmds.append(cmd)
-        else:
-            clean_lines.append(line)
-    return "\n".join(clean_lines).strip(), cmds
-
-
 def is_dangerous(cmd):
-    """Check if command could be destructive."""
     for pat in DANGEROUS:
         if re.search(pat, cmd):
             return True
     return False
 
 
-def run_command(cmd):
-    """Execute a shell command safely."""
+def extract_commands(text):
+    """Find COMMAND: lines in text."""
+    cmds = []
+    clean = []
+    for line in text.split("\n"):
+        s = line.strip()
+        if s.upper().startswith("COMMAND:"):
+            cmd = s[8:].strip().strip("`").strip()
+            if cmd:
+                cmds.append(cmd)
+        else:
+            clean.append(line)
+    return "\n".join(clean).strip(), cmds
+
+
+def run_cmd(cmd):
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30
         )
-        output = ""
+        out = ""
         if result.stdout:
-            output += result.stdout
+            out += result.stdout
         if result.returncode != 0 and result.stderr:
-            output += f"\n{C['r']}{result.stderr}{C['x']}"
-        return output.strip() if output.strip() else "(no output)"
+            out += f"\n{R}{result.stderr}{X}"
+        return out.strip() if out.strip() else "(done)"
     except subprocess.TimeoutExpired:
-        return f"{C['r']}Command timed out after 30s{C['x']}"
+        return f"{R}Timed out.{X}"
 
 
-# === UI ===
+def execute_commands(commands):
+    """Run extracted commands with safety checks."""
+    for cmd in commands:
+        print()
+        if is_dangerous(cmd):
+            print(f"  {Y}{BD}warning:{X} {Y}{cmd}{X}")
+            try:
+                confirm = input(f"  {Y}run? (yes/no): {X}").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n  {D}cancelled{X}")
+                continue
+            if confirm != "yes":
+                print(f"  {D}cancelled{X}")
+                continue
+        else:
+            print(f"  {D}$ {cmd}{X}")
+
+        output = run_cmd(cmd)
+        if output:
+            for line in output.split("\n")[:25]:
+                print(f"  {line}")
+            total = len(output.split("\n"))
+            if total > 25:
+                print(f"  {D}... ({total} lines total){X}")
+
+
+# =============================================
+# PART 5: MAIN INTERFACE
+# =============================================
 
 def banner():
-    state = {
-        "cpu": read_cpu(),
-        "mem": read_mem(),
-        "disk": read_disk(),
-    }
-    # Parse quick stats
-    try:
-        temp = re.search(r"temp=(\S+)", state["cpu"]).group(1)
-        cpu_pct = re.search(r"cpu=(\S+)", state["cpu"]).group(1)
-        ram_free = re.search(r"ram=(\S+)", state["mem"]).group(1)
-        disk_free = re.search(r"disk=(\S+)", state["disk"]).group(1)
-    except Exception:
-        temp = cpu_pct = ram_free = disk_free = "?"
-
-    hostname = socket.gethostname()
-
     print(f"""
-{C['B']}{C['g']}  _   _               _
+{BD}{G}  _   _               _
  | | | | __ _ ______| |
  | |_| |/ _` |_  / _` |
  |  _  | (_| |/ /  __/ |
- |_| |_|\\__,_/___\\___|_|{C['x']}
-
- {C['d']}Hazel OS on {hostname}
- CPU {cpu_pct} | {temp} | RAM {ram_free} free | Disk {disk_free} free
- Type naturally. ! for bash. exit to quit.{C['x']}
+ |_| |_|\\__,_/___\\___|_|{X}
+ {D}{sys_overview()}
+ Type 'help' for commands. '!' for bash.{X}
 """)
 
 
 def main():
-    # Setup
     HAZEL_DIR.mkdir(exist_ok=True)
 
-    # Command history
+    # History
     try:
         readline.read_history_file(str(HISTORY_FILE))
     except FileNotFoundError:
@@ -270,113 +465,63 @@ def main():
 
     while True:
         try:
-            user_input = input(f"{C['g']}hazel> {C['x']}").strip()
+            user_input = input(f"{G}hazel>{X} ").strip()
         except (KeyboardInterrupt, EOFError):
-            print(f"\n{C['d']}bye!{C['x']}")
+            print(f"\n{D}bye!{X}")
             break
 
         if not user_input:
             continue
 
-        # Save history
         readline.write_history_file(str(HISTORY_FILE))
 
         if user_input.lower() in ("exit", "quit", "bye", "q"):
-            print(f"{C['d']}bye!{C['x']}")
+            print(f"{D}bye!{X}")
             break
-
-        # Status shortcut
-        if user_input.lower() in ("status", "stats"):
-            print(f"  {read_cpu()}")
-            print(f"  {read_mem()}")
-            print(f"  {read_disk()}")
-            print(f"  {read_net()}")
-            print(f"  {read_uptime()}")
-            print()
-            continue
-
-        # Help
-        if user_input.lower() in ("help", "?"):
-            print(f"""
-  {C['B']}Hazel OS Commands{C['x']}
-  {C['d']}Ask anything in natural language:{C['x']}
-    "how much disk space do I have?"
-    "what is my IP address?"
-    "explain what chmod does"
-    "why is the system slow?"
-
-  {C['B']}Shortcuts:{C['x']}
-    {C['g']}!{C['x']} <cmd>     Run bash command directly
-    {C['g']}status{C['x']}      Quick system overview
-    {C['g']}help{C['x']}        This message
-    {C['g']}exit{C['x']}        Quit Hazel
-""")
-            continue
 
         # Raw bash
         if user_input.startswith("!"):
             cmd = user_input[1:].strip()
             if cmd:
-                print(run_command(cmd))
+                print(run_cmd(cmd))
                 print()
             continue
 
-        # === AI Query ===
-        sys.stdout.write(f"{C['d']}thinking...{C['x']}")
+        # === Try instant handler first (no LLM) ===
+        instant = handle_instant(user_input)
+        if instant is not None:
+            response_text, has_commands = instant
+            display, commands = extract_commands(response_text)
+            if display:
+                print(f"\n{B}{display}{X}")
+            if commands:
+                execute_commands(commands)
+            print()
+            continue
+
+        # === Fall back to LLM ===
+        sys.stdout.write(f"{D}thinking...{X}")
         sys.stdout.flush()
 
-        # Read system state
-        context = get_context(user_input)
-
-        # Ask LLM
+        context = get_llm_context(user_input)
         start = time.time()
         response = ask_llm(user_input, context)
         elapsed = time.time() - start
 
-        # Debug: show what happened if timeout
-        if response is None:
-            print(f"\r{C['d']}debug: context={len(context)} chars, query='{user_input}'{C['x']}")
-            print(f"{C['d']}debug: context was: {context[:200]}{C['x']}")
-
-        # Clear "thinking"
         sys.stdout.write("\r" + " " * 30 + "\r")
         sys.stdout.flush()
 
         if response is None:
-            print(f"{C['y']}Took too long. Try something simpler.{C['x']}\n")
+            print(f"{Y}Hmm, couldn't figure that out. Try rephrasing?{X}\n")
             continue
 
-        # Parse commands from response
-        display_text, commands = extract_commands(response)
+        display, commands = extract_commands(response)
+        if display:
+            print(f"\n{B}{display}{X}")
+        print(f"{D}({elapsed:.1f}s){X}")
 
-        # Show response
-        if display_text:
-            print(f"{C['b']}{display_text}{C['x']}")
-        print(f"{C['d']}({elapsed:.1f}s){C['x']}")
-
-        # Handle extracted commands
-        for cmd in commands:
-            print()
-            if is_dangerous(cmd):
-                print(f"  {C['y']}{C['B']}warning:{C['x']} {C['y']}{cmd}{C['x']}")
-                try:
-                    confirm = input(f"  {C['y']}run this? (yes/no): {C['x']}").strip().lower()
-                except (KeyboardInterrupt, EOFError):
-                    print(f"\n  {C['d']}cancelled{C['x']}")
-                    continue
-                if confirm != "yes":
-                    print(f"  {C['d']}cancelled{C['x']}")
-                    continue
-            else:
-                print(f"  {C['d']}$ {cmd}{C['x']}")
-
-            output = run_command(cmd)
-            if output:
-                # Indent command output
-                for line in output.split("\n")[:20]:
-                    print(f"  {line}")
-                if len(output.split("\n")) > 20:
-                    print(f"  {C['d']}... ({len(output.split(chr(10)))} lines total){C['x']}")
+        if commands:
+            execute_commands(commands)
 
         print()
 
