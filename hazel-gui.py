@@ -611,15 +611,12 @@ def api_query():
 
 def main():
     port = 3000
-    url = f"http://localhost:{port}"
 
     print(f"\n  HAZEL OS - GUI")
-    print(f"  Opening {url}")
+    print(f"  Running on http://localhost:{port}")
     print(f"  Press Ctrl+C to stop\n")
 
-    # Open browser after short delay
-    threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-
+    # Don't open browser - the launcher script handles that
     app.run(host="0.0.0.0", port=port, debug=False)
 
 

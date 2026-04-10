@@ -32,10 +32,10 @@ HISTORY_FILE = HAZEL_DIR / "history"
 PROMPT_FILE = HAZEL_DIR / "prompt.txt"
 
 # Defaults (overridden by config.yaml)
-MAX_TOKENS = 120
-MAX_TOKENS_DEEP = 300
-TIMEOUT = 30
-TIMEOUT_DEEP = 60
+MAX_TOKENS = 200
+MAX_TOKENS_DEEP = 500
+TIMEOUT = 60
+TIMEOUT_DEEP = 120
 THREADS = 4
 TEMPERATURE = 0.7
 HUMANIZE = True
@@ -260,12 +260,13 @@ auto_select_models()
 load_config()
 
 DEEP_KEYWORDS = [
-    "explain", "why", "how does", "how do", "what is", "what are",
-    "teach", "learn", "understand", "describe", "compare",
-    "difference between", "help me understand", "tell me about",
-    "write", "create", "build", "design", "plan",
-    "debug", "fix", "solve", "troubleshoot", "diagnose",
-    "analyze", "review", "evaluate",
+    "explain", "why does", "why is", "why do",
+    "how does", "how do", "how is",
+    "teach me", "help me understand", "tell me about",
+    "describe how", "compare",  "difference between",
+    "write a", "write me", "create a",
+    "debug", "troubleshoot", "diagnose",
+    "analyze", "evaluate",
 ]
 
 # Known desktop apps (command: display name)
@@ -1426,6 +1427,21 @@ def get_llm_context(query):
     return ", ".join(parts)
 
 
+def trim_incomplete(text):
+    """Remove trailing incomplete sentence if output was cut off."""
+    if not text:
+        return text
+    # If ends with sentence-ending punctuation, it's fine
+    if text[-1] in ".!?\"')":
+        return text
+    # Find last sentence boundary
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] in ".!?":
+            return text[:i + 1]
+    # No sentence boundary found - return as-is (short response)
+    return text
+
+
 def run_llm(prompt_text, model_path, tokens, timeout, temp=None):
     """Core LLM runner. Writes prompt to file, calls llama-completion."""
     HAZEL_DIR.mkdir(exist_ok=True)
@@ -1460,7 +1476,12 @@ def run_llm(prompt_text, model_path, tokens, timeout, temp=None):
         text = result.stdout.strip()
         for tok in ["</s>", "<|user|>", "<|assistant|>", "<|system|>", "> EOF"]:
             text = text.split(tok)[0]
-        return text.strip() if text.strip() else None
+        text = text.strip()
+        if not text:
+            return None
+        # Trim trailing incomplete sentence
+        text = trim_incomplete(text)
+        return text
     except subprocess.TimeoutExpired:
         return None
     except Exception as e:
@@ -1518,16 +1539,16 @@ def ask_llm(user_input, context):
 
     if deep:
         system_msg = (
-            "You are Hazel, a knowledgeable computer assistant on a Raspberry Pi 5. "
-            "Give thorough, complete answers. Finish your sentences. "
-            "Use the data provided when relevant. "
+            "You are Hazel, a computer assistant. "
+            "Give thorough, complete answers. Always end with a complete sentence. "
+            "Never stop mid-sentence. Use the data provided when relevant. "
             "To suggest a bash command write COMMAND: <cmd>"
         )
     else:
         system_msg = (
-            "You are Hazel, a computer assistant on a Raspberry Pi 5. "
-            "Give short, helpful answers. Finish your sentences. "
-            "Use the data provided. "
+            "You are Hazel, a computer assistant. "
+            "Give short, helpful answers in 2-3 complete sentences. "
+            "Never stop mid-sentence. Use the data provided. "
             "To suggest a bash command write COMMAND: <cmd>"
         )
 
