@@ -44,8 +44,8 @@ PROMPT_FILE = HAZEL_DIR / "prompt.txt"
 # Defaults (overridden by config.yaml)
 MAX_TOKENS = 200
 MAX_TOKENS_DEEP = 500
-TIMEOUT = 60
-TIMEOUT_DEEP = 120
+TIMEOUT = 90
+TIMEOUT_DEEP = 180
 THREADS = 4
 TEMPERATURE = 0.7
 HUMANIZE = True
@@ -336,6 +336,7 @@ X = "\033[0m"
 
 # === CONVERSATION MEMORY ===
 conversation_history = []
+NOTES_FILE = HAZEL_DIR / "notes.json"
 
 def remember(role, content):
     """Store conversation turn for context."""
@@ -347,15 +348,38 @@ def remember(role, content):
 
 def get_memory_context():
     """Format recent conversation for LLM."""
-    if not conversation_history:
-        return ""
-    lines = []
-    for turn in conversation_history[-4:]:  # last 2 exchanges
-        if turn["role"] == "user":
-            lines.append(f"User said: {turn['content']}")
-        else:
-            lines.append(f"You said: {turn['content'][:80]}")
-    return "Recent conversation: " + ". ".join(lines)
+    parts = []
+    if conversation_history:
+        lines = []
+        for turn in conversation_history[-4:]:
+            if turn["role"] == "user":
+                lines.append(f"User said: {turn['content']}")
+            else:
+                lines.append(f"You said: {turn['content'][:80]}")
+        parts.append("Recent conversation: " + ". ".join(lines))
+    # Add persistent notes
+    notes = load_notes()
+    if notes:
+        parts.append("Things I know: " + ". ".join(notes))
+    return ". ".join(parts)
+
+def load_notes():
+    """Load persistent user notes."""
+    if NOTES_FILE.exists():
+        try:
+            return json.loads(NOTES_FILE.read_text())
+        except Exception:
+            pass
+    return []
+
+def save_note(note):
+    """Save a persistent note about the user."""
+    notes = load_notes()
+    notes.append(note)
+    # Keep last 50 notes
+    notes = notes[-50:]
+    HAZEL_DIR.mkdir(exist_ok=True)
+    NOTES_FILE.write_text(json.dumps(notes, indent=2))
 
 
 # =============================================
@@ -740,9 +764,9 @@ def find_app(name):
 
     # Direct aliases
     aliases = {
-        "browser": "chromium-browser",
-        "web": "chromium-browser",
-        "chrome": "chromium-browser",
+        "browser": "firefox" if shutil.which("firefox") else "chromium-browser",
+        "web": "firefox" if shutil.which("firefox") else "chromium-browser",
+        "chrome": "chrome" if shutil.which("chrome") else "chromium-browser",
         "chromium": "chromium-browser",
         "files": "pcmanfm",
         "file manager": "pcmanfm",
@@ -1112,6 +1136,35 @@ def handle_instant(query):
             f"  COMMAND: python3 {Path(__file__).parent}/hazel-profile.py"
         ), True
 
+    # --- Remember / my name is ---
+    m = re.match(r"(?:my name is|i'm|im|i am|call me)\s+(.+)", q)
+    if m:
+        name = m.group(1).strip().title()
+        save_note(f"User's name is {name}")
+        return f"  Got it! I'll remember your name is {name}.", "skip"
+
+    m = re.match(r"(?:remember|note|save)\s+(?:that\s+)?(.+)", q)
+    if m:
+        note = m.group(1).strip()
+        save_note(note)
+        return f"  Noted: {note}", "skip"
+
+    # --- Recall notes ---
+    if q in ("notes", "what do you remember", "memories"):
+        notes = load_notes()
+        if notes:
+            lines = [f"  {BD}Things I remember:{X}"]
+            for n in notes:
+                lines.append(f"    - {n}")
+            return "\n".join(lines), "skip"
+        return "  I don't have any notes yet. Tell me things with 'remember <fact>'.", "skip"
+
+    # --- Forget ---
+    if q in ("forget everything", "clear notes", "forget"):
+        if NOTES_FILE.exists():
+            NOTES_FILE.unlink()
+        return "  Notes cleared.", "skip"
+
     # --- Config ---
     if q in ("config", "settings", "preferences"):
         if CONFIG_FILE.exists():
@@ -1361,22 +1414,44 @@ def handle_instant(query):
         else:
             return f"  No files containing '{term}' found.", "skip"
 
-    # --- Open file ---
-    m = re.match(r"open\s+(?:file\s+)?['\"]?(.+\.\w+)['\"]?", q)
+    # --- Smart open: files, folders, or apps ---
+    m = re.match(r"(?:open|pull up|show me|go to|launch|start|run)\s+(?:the\s+|my\s+)?(.+)", q)
     if m:
-        filepath = m.group(1).strip()
-        result = open_file(filepath)
-        return f"  {result}", "skip"
+        target = m.group(1).strip().strip("'\"")
 
-    # --- Open / launch app ---
-    m = re.match(r"(?:open|launch|start|run)\s+(?:the\s+)?(.+)", q)
-    if m:
-        app_name = m.group(1).strip()
-        # Don't match file extensions - those are file opens
-        if "." not in app_name or app_name in ("vs code", "v.l.c"):
-            result = launch_app(app_name)
-            if result:
+        # 1. Exact file with extension
+        if "." in target and not target.endswith("."):
+            result = open_file(target)
+            return f"  {result}", "skip"
+
+        # 2. Check if it's a known app first (before file search)
+        app_result = launch_app(target)
+        if app_result:
+            return f"  {app_result}", "skip"
+
+        # 3. Check if it's a folder in home
+        home = Path.home()
+        for d in home.iterdir():
+            if d.is_dir() and d.name.lower() == target.lower():
+                result = open_file(str(d))
+                return f"  Opened folder: {d.name}/", "skip"
+
+        # 4. Search for matching files/folders
+        matches = find_file(target)
+        if matches:
+            if len(matches) == 1:
+                # Only one match - open it directly
+                full_path = home / matches[0][0]
+                result = open_file(str(full_path))
                 return f"  {result}", "skip"
+            else:
+                lines = [f"  Found {len(matches)} matches for '{target}':"]
+                for i, (rel, size) in enumerate(matches[:8], 1):
+                    lines.append(f"    {i}. ~/{rel}  ({format_size(size)})")
+                lines.append(f"\n  Say 'open <filename>' to open one.")
+                return "\n".join(lines), "skip"
+
+        return f"  Couldn't find '{target}' as a file, folder, or app.", "skip"
 
     # --- Close app ---
     m = re.match(r"(?:close|quit|exit)\s+(?:the\s+)?(.+)", q)
@@ -1623,23 +1698,21 @@ def ask_llm(user_input, context):
     if deep:
         model = MODEL_TIER3 or MODEL_DEEP
         system_msg = (
-            "You are Hazel, a computer assistant. "
-            "Give thorough, complete answers. Always end with a complete sentence. "
-            "Never stop mid-sentence. Use the data provided when relevant. "
-            "To suggest a bash command write COMMAND: <cmd>"
+            "You are Hazel, a friendly AI assistant on this computer. "
+            "Answer the user's question directly and conversationally. "
+            "Be thorough but natural. End every response with a complete sentence."
         )
     else:
         model = MODEL_TIER2 or MODEL_DEFAULT
         system_msg = (
-            "You are Hazel, a computer assistant. "
-            "Give short, helpful answers in 2-3 complete sentences. "
-            "Never stop mid-sentence. Use the data provided. "
-            "To suggest a bash command write COMMAND: <cmd>"
+            "You are Hazel, a friendly AI assistant on this computer. "
+            "Answer the user's question directly in 2-3 sentences. "
+            "Be conversational and natural. Do not mention commands or bash unless asked."
         )
 
     prompt = (
         f"<|system|>\n{system_msg}\n"
-        f"System: {context}</s>\n"
+        f"About this computer: {context}</s>\n"
         f"<|user|>\n{user_input}</s>\n"
         "<|assistant|>\n"
     )
