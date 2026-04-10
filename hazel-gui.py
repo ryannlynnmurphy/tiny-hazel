@@ -528,6 +528,16 @@ def api_status():
 
 @app.route("/api/query", methods=["POST"])
 def api_query():
+    try:
+        return _handle_query()
+    except Exception as e:
+        return jsonify({
+            "response": f"Oops, I hit a bump: {str(e)[:200]}. Try again?",
+            "timing": "error",
+        })
+
+
+def _handle_query():
     data = request.json
     query = data.get("query", "").strip()
     if not query:

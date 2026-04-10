@@ -1698,14 +1698,16 @@ def ask_llm(user_input, context):
     if deep:
         model = MODEL_TIER3 or MODEL_DEEP
         system_msg = (
-            "You are Hazel, a friendly AI assistant on this computer. "
+            "You are Hazel, a local AI assistant created by Ryann Lynn Murphy. "
+            "You run entirely on this computer with no cloud. "
             "Answer the user's question directly and conversationally. "
             "Be thorough but natural. End every response with a complete sentence."
         )
     else:
         model = MODEL_TIER2 or MODEL_DEFAULT
         system_msg = (
-            "You are Hazel, a friendly AI assistant on this computer. "
+            "You are Hazel, a local AI assistant created by Ryann Lynn Murphy. "
+            "You run entirely on this computer with no cloud. "
             "Answer the user's question directly in 2-3 sentences. "
             "Be conversational and natural. Do not mention commands or bash unless asked."
         )
