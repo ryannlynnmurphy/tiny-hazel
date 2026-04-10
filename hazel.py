@@ -1429,22 +1429,27 @@ def run_llm(prompt_text, model_path, tokens, timeout, temp=None):
     PROMPT_FILE.write_text(prompt_text)
 
     t = temp if temp is not None else TEMPERATURE
-    cmd_str = (
-        f'"{LLAMA_BIN}" '
-        f'-m "{model_path}" '
-        f'-f "{PROMPT_FILE}" '
-        f'-n {tokens} '
-        f'-t {THREADS} --temp {t} --top-p 0.9 --no-display-prompt '
-        f'{"2>NUL" if _IS_WINDOWS else "2>/dev/null"}'
-    )
+    cmd = [
+        str(LLAMA_BIN),
+        "-m", str(model_path),
+        "-f", str(PROMPT_FILE),
+        "-n", str(tokens),
+        "-t", str(THREADS),
+        "--temp", str(t),
+        "--top-p", "0.9",
+        "--no-display-prompt",
+    ]
 
     try:
         result = subprocess.run(
-            cmd_str, shell=True,
-            capture_output=True, text=True,
+            cmd,
+            capture_output=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
+        # Decode with error handling for Windows
+        result.stdout = result.stdout.decode("utf-8", errors="replace") if isinstance(result.stdout, bytes) else result.stdout
+        result.stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else result.stderr
         text = result.stdout.strip()
         for tok in ["</s>", "<|user|>", "<|assistant|>", "<|system|>", "> EOF"]:
             text = text.split(tok)[0]
