@@ -240,10 +240,10 @@ def handle_instant(query):
         lines.append(f"\n  Disk: {d['disk_free_gb']}GB free")
         return "\n".join(lines), False
 
-    # --- Date/time ---
+    # --- Date/time (already natural, skip humanize) ---
     if re.search(r"(time|date|day|today|what day)", q):
         now = datetime.now()
-        return f"  {now.strftime('%A, %B %d, %Y at %I:%M %p')}", False
+        return f"  It's {now.strftime('%A, %B %d, %Y at %I:%M %p')}.", "skip"
 
     # --- Help ---
     if q in ("help", "?", "commands"):
@@ -338,10 +338,8 @@ def humanize(data, query):
 
     prompt = (
         "<|system|>\n"
-        "Rewrite this computer data as a brief, friendly one-to-three sentence response. "
-        "Be natural and conversational. Keep all the numbers accurate. "
-        "Do not add information that is not in the data.</s>\n"
-        f"<|user|>\nQuestion: {query}\nData:\n{clean}</s>\n"
+        "Rewrite the data as one short sentence. Only use the numbers given. Add nothing extra.</s>\n"
+        f"<|user|>\n{clean}</s>\n"
         "<|assistant|>\n"
     )
 
@@ -569,10 +567,14 @@ def main():
         # === Try instant handler first ===
         instant = handle_instant(user_input)
         if instant is not None:
-            response_text, has_commands = instant
+            response_text, flag = instant
             display, commands = extract_commands(response_text)
 
-            if display and not has_commands:
+            if flag == "skip":
+                # Already natural language, just print it
+                if display:
+                    print(f"\n{B}{display}{X}")
+            elif display and not commands:
                 # Humanize the data through LLM for natural speech
                 sys.stdout.write(f"{D}...{X}")
                 sys.stdout.flush()
