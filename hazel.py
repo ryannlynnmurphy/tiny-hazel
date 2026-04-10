@@ -331,6 +331,51 @@ def get_llm_context(query):
     return ", ".join(parts)
 
 
+def humanize(data, query):
+    """Take raw system data and make it conversational via quick LLM pass."""
+    # Strip ANSI colors for the LLM
+    clean = re.sub(r'\033\[[0-9;]*m', '', data).strip()
+
+    prompt = (
+        "<|system|>\n"
+        "Rewrite this computer data as a brief, friendly one-to-three sentence response. "
+        "Be natural and conversational. Keep all the numbers accurate. "
+        "Do not add information that is not in the data.</s>\n"
+        f"<|user|>\nQuestion: {query}\nData:\n{clean}</s>\n"
+        "<|assistant|>\n"
+    )
+
+    HAZEL_DIR.mkdir(exist_ok=True)
+    PROMPT_FILE.write_text(prompt)
+
+    cmd_str = (
+        f'"{LLAMA_BIN}" '
+        f'-m "{MODEL_PATH}" '
+        f'-f "{PROMPT_FILE}" '
+        f'-n 60 '
+        f'-t 4 --temp 0.5 --top-p 0.9 --no-display-prompt '
+        f'2>/dev/null'
+    )
+
+    try:
+        result = subprocess.run(
+            cmd_str, shell=True,
+            capture_output=True, text=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+        )
+        text = result.stdout.strip()
+        for tok in ["</s>", "<|user|>", "<|assistant|>", "<|system|>", "> EOF"]:
+            text = text.split(tok)[0]
+        text = text.strip()
+        if text and len(text) > 10:
+            return text
+    except Exception:
+        pass
+    # Fallback: return raw data if humanize fails
+    return clean
+
+
 def is_deep_query(query):
     """Check if query needs extended thinking."""
     q = query.lower()
@@ -521,13 +566,24 @@ def main():
                 print()
             continue
 
-        # === Try instant handler first (no LLM) ===
+        # === Try instant handler first ===
         instant = handle_instant(user_input)
         if instant is not None:
             response_text, has_commands = instant
             display, commands = extract_commands(response_text)
-            if display:
+
+            if display and not has_commands:
+                # Humanize the data through LLM for natural speech
+                sys.stdout.write(f"{D}...{X}")
+                sys.stdout.flush()
+                natural = humanize(display, user_input)
+                sys.stdout.write("\r" + " " * 20 + "\r")
+                sys.stdout.flush()
+                print(f"\n{B}{natural}{X}")
+                print(f"{D}({display.strip()}){X}")  # raw data underneath
+            elif display:
                 print(f"\n{B}{display}{X}")
+
             if commands:
                 execute_commands(commands)
             print()
