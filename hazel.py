@@ -259,6 +259,25 @@ def load_config():
 auto_select_models()
 load_config()
 
+# Load user profile
+from importlib import import_module as _imp
+try:
+    _profiler = _imp("hazel-profile".replace("-", "_"))
+    USER_PROFILE = _profiler.load_profile()
+    USER_SUMMARY = _profiler.get_profile_summary()
+except Exception:
+    # Inline fallback
+    USER_PROFILE = None
+    USER_SUMMARY = ""
+    _profile_path = HAZEL_DIR / "profile.json"
+    if _profile_path.exists():
+        try:
+            import json as _json
+            USER_PROFILE = _json.loads(_profile_path.read_text())
+            USER_SUMMARY = USER_PROFILE.get("summary", "")
+        except Exception:
+            pass
+
 DEEP_KEYWORDS = [
     "explain", "why does", "why is", "why do",
     "how does", "how do", "how is",
@@ -1034,6 +1053,42 @@ def handle_instant(query):
             available = ", ".join(MODEL_REGISTRY.keys())
             return f"  Unknown model '{name}'. Available: {available}", "skip"
 
+    # --- Profile ---
+    if q in ("profile", "who am i", "about me", "what do you know about me"):
+        if USER_PROFILE:
+            lines = [f"  {BD}User Profile:{X}"]
+            lines.append(f"    {USER_PROFILE.get('summary', 'No summary')}")
+            lines.append(f"")
+            if USER_PROFILE.get("roles"):
+                lines.append(f"    Roles: {', '.join(USER_PROFILE['roles'])}")
+            if USER_PROFILE.get("languages"):
+                langs = ", ".join(l["name"] for l in USER_PROFILE["languages"][:6])
+                lines.append(f"    Languages: {langs}")
+            if USER_PROFILE.get("git_repos"):
+                repos = ", ".join(r["name"] for r in USER_PROFILE["git_repos"][:5])
+                lines.append(f"    Projects: {repos}")
+            if USER_PROFILE.get("recent_files"):
+                recent = ", ".join(f["name"] for f in USER_PROFILE["recent_files"][:5])
+                lines.append(f"    Recent work: {recent}")
+            if USER_PROFILE.get("frequent_commands"):
+                cmds = ", ".join(c["cmd"] for c in USER_PROFILE["frequent_commands"][:8])
+                lines.append(f"    Frequent commands: {cmds}")
+            lines.append(f"")
+            lines.append(f"    {D}Rescan: scan profile{X}")
+            return "\n".join(lines), "skip"
+        else:
+            return (
+                f"  I don't know you yet! Let me scan your machine.\n"
+                f"  COMMAND: python3 {Path(__file__).parent}/hazel-profile.py"
+            ), True
+
+    # --- Rescan profile ---
+    if q in ("scan profile", "rescan", "learn about me", "scan me", "scan"):
+        return (
+            f"  Scanning your machine to learn about you...\n"
+            f"  COMMAND: python3 {Path(__file__).parent}/hazel-profile.py"
+        ), True
+
     # --- Config ---
     if q in ("config", "settings", "preferences"):
         if CONFIG_FILE.exists():
@@ -1418,6 +1473,10 @@ def get_llm_context(query):
         if t:
             parts.append(f"temp={t}C")
         parts.append(f"ram={m['ram_free_gb']}GB free")
+
+    # Add user profile
+    if USER_SUMMARY:
+        parts.append(USER_SUMMARY)
 
     # Add conversation memory
     mem = get_memory_context()
