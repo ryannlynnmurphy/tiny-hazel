@@ -129,15 +129,9 @@ def auto_select_models():
     gpu = has_gpu()
     installed = get_installed_models()
 
-    # Preference order for default model
-    # On beefy machines (12GB+), use 7B model as default - it's fast enough on x86
-    if ram >= 12 and "mistral" in installed:
-        MODEL_DEFAULT = installed["mistral"]
-    elif ram >= 12 and "llama3" in installed:
-        MODEL_DEFAULT = installed["llama3"]
-    elif ram >= 12 and "qwen" in installed:
-        MODEL_DEFAULT = installed["qwen"]
-    elif ram >= 8 and "phi3" in installed:
+    # Preference order for default model (speed matters here)
+    # TinyLlama for fast responses, bigger models for deep thinking
+    if ram >= 8 and "phi3" in installed:
         MODEL_DEFAULT = installed["phi3"]
     elif "tinyllama" in installed:
         MODEL_DEFAULT = installed["tinyllama"]
