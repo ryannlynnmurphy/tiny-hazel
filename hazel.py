@@ -602,7 +602,150 @@ def set_brightness(level):
 
 
 # =============================================
-# PART 5: INSTANT COMMANDS
+# PART 5: TUTORIALS (interactive learning)
+# =============================================
+
+TUTORIALS = {
+    "permissions": {
+        "title": "File Permissions (chmod)",
+        "steps": [
+            ("Let's learn about file permissions. First, let's create a test file:",
+             "touch ~/test_permissions.txt"),
+            ("Now let's see its current permissions:",
+             "ls -l ~/test_permissions.txt"),
+            ("The letters like '-rw-r--r--' mean:\n"
+             "  r = read, w = write, x = execute\n"
+             "  Owner | Group | Others\n\n"
+             "Let's make it executable:",
+             "chmod +x ~/test_permissions.txt"),
+            ("See the difference? Now it has 'x' permission:",
+             "ls -l ~/test_permissions.txt"),
+            ("Let's clean up:",
+             "rm ~/test_permissions.txt"),
+        ]
+    },
+    "files": {
+        "title": "Finding Files",
+        "steps": [
+            ("Let's learn to find files. First, what's in your home directory?",
+             "ls ~"),
+            ("Now let's search for all Python files:",
+             "find ~ -name '*.py' -not -path '*/llama.cpp/*' 2>/dev/null | head -10"),
+            ("You can also search inside files. Let's find files containing 'hazel':",
+             "grep -rl 'hazel' ~/hazel-os/ 2>/dev/null"),
+            ("The 'find' command searches by name.\n"
+             "'grep' searches inside files.\n"
+             "In Hazel, just type 'find <name>' or 'search for <term>'.",
+             None),
+        ]
+    },
+    "processes": {
+        "title": "Managing Processes",
+        "steps": [
+            ("A 'process' is a running program. Let's see what's running:",
+             "ps aux | head -15"),
+            ("That's a lot of info. Let's see the top CPU users:",
+             "ps aux --sort=-%cpu | head -8"),
+            ("To stop a process, you use 'kill' with its PID number.\n"
+             "In Hazel, just type 'kill <name>' and I'll handle it.",
+             None),
+        ]
+    },
+    "networking": {
+        "title": "Networking Basics",
+        "steps": [
+            ("Let's check your network. What's your IP address?",
+             "hostname -I"),
+            ("Can you reach the internet?",
+             "ping -c 2 1.1.1.1"),
+            ("What DNS servers are you using?",
+             "cat /etc/resolv.conf"),
+            ("Your Pi is at the IP shown above.\n"
+             "In Hazel, just type 'network' or 'what's my IP' anytime.",
+             None),
+        ]
+    },
+    "gpio": {
+        "title": "GPIO Pins (Hardware)",
+        "steps": [
+            ("Your Raspberry Pi has GPIO pins for connecting hardware.\n"
+             "Let's see the pin layout:",
+             "pinout 2>/dev/null || echo 'Install with: sudo apt install python3-gpiozero'"),
+            ("GPIO lets you:\n"
+             "  - Control LEDs\n"
+             "  - Read sensors\n"
+             "  - Drive motors\n"
+             "  - Connect buttons\n\n"
+             "This is what makes the Pi special - it's a computer AND a hardware platform.",
+             None),
+        ]
+    },
+    "pi": {
+        "title": "Your Raspberry Pi",
+        "steps": [
+            ("Let's explore your Pi! What model is it?",
+             "cat /proc/device-tree/model"),
+            ("How much RAM?",
+             "free -h"),
+            ("What's the CPU?",
+             "lscpu | head -15"),
+            ("How's the temperature?",
+             "vcgencmd measure_temp"),
+            ("Is it throttling? (undervoltage, overheating)",
+             "vcgencmd get_throttled"),
+            ("0x0 means healthy. Your Pi is doing great!\n"
+             "In Hazel, type 'hardware' anytime to see all this.",
+             None),
+        ]
+    },
+}
+
+
+def run_tutorial(name):
+    """Run an interactive tutorial."""
+    if name not in TUTORIALS:
+        available = ", ".join(TUTORIALS.keys())
+        print(f"\n{B}  Available tutorials: {available}{X}")
+        print(f"  {D}Type: tutorial <name>{X}\n")
+        return
+
+    tut = TUTORIALS[name]
+    print(f"\n{BD}{G}  Tutorial: {tut['title']}{X}\n")
+
+    for i, (explanation, command) in enumerate(tut["steps"], 1):
+        print(f"  {B}{explanation}{X}")
+
+        if command:
+            print(f"\n  {D}$ {command}{X}")
+            try:
+                proceed = input(f"  {G}Run this? (enter=yes, s=skip, q=quit): {X}").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n  {D}Tutorial ended.{X}\n")
+                return
+
+            if proceed == "q":
+                print(f"  {D}Tutorial ended.{X}\n")
+                return
+            elif proceed != "s":
+                try:
+                    result = subprocess.run(
+                        command, shell=True,
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if result.stdout:
+                        for line in result.stdout.strip().split("\n")[:20]:
+                            print(f"  {line}")
+                    if result.stderr and result.returncode != 0:
+                        print(f"  {R}{result.stderr.strip()}{X}")
+                except subprocess.TimeoutExpired:
+                    print(f"  {R}Timed out.{X}")
+        print()
+
+    print(f"  {G}Tutorial complete!{X}\n")
+
+
+# =============================================
+# PART 6: INSTANT COMMANDS
 # =============================================
 
 def handle_instant(query):
@@ -941,6 +1084,9 @@ def handle_instant(query):
             f"    update system, reboot, shutdown\n\n"
             f"  {G}Ask anything:{X}\n"
             f"    explain, why, how, what is... (uses AI)\n\n"
+            f"  {G}Learn:{X}\n"
+            f"    tutorial permissions/files/processes/networking/gpio/pi\n"
+            f"    teach me <topic>\n\n"
             f"  {G}Config:{X}\n"
             f"    config, model, download phi3\n\n"
             f"  {G}Power:{X}\n"
@@ -1238,6 +1384,40 @@ def main():
             if cmd:
                 print(run_cmd(cmd))
                 print()
+            continue
+
+        # Tutorials
+        if user_input.lower().startswith("tutorial"):
+            parts = user_input.lower().split(None, 1)
+            name = parts[1] if len(parts) > 1 else ""
+            if not name:
+                available = ", ".join(TUTORIALS.keys())
+                print(f"\n{B}  Tutorials: {available}{X}")
+                print(f"  {D}Type: tutorial <name>{X}\n")
+            else:
+                # Fuzzy match tutorial name
+                matched = None
+                for key in TUTORIALS:
+                    if name in key or key in name:
+                        matched = key
+                        break
+                if matched:
+                    run_tutorial(matched)
+                else:
+                    available = ", ".join(TUTORIALS.keys())
+                    print(f"\n{Y}  No tutorial '{name}'. Available: {available}{X}\n")
+            continue
+
+        # Learn / teach shortcuts
+        if re.match(r"(learn|teach me)\s+(.+)", user_input.lower()):
+            topic = re.match(r"(?:learn|teach me)\s+(.+)", user_input.lower()).group(1)
+            for key in TUTORIALS:
+                if topic in key or key in topic:
+                    run_tutorial(key)
+                    break
+            else:
+                # No tutorial, fall through to LLM
+                pass
             continue
 
         # === Try instant handler first ===

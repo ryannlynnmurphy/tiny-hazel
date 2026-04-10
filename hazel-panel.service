@@ -1,0 +1,14 @@
+[Unit]
+Description=Hazel OS System Monitor
+After=graphical.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/hazel-os/hazel-panel.py
+Restart=on-failure
+RestartSec=10
+Environment=DISPLAY=:0
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+
+[Install]
+WantedBy=default.target
