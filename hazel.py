@@ -12,7 +12,10 @@ import re
 import psutil
 import socket
 import time
-import readline
+try:
+    import readline
+except ImportError:
+    readline = None  # Windows
 import shutil
 import glob as globmod
 from pathlib import Path
@@ -21,7 +24,10 @@ from datetime import datetime
 # === CONFIG ===
 HAZEL_DIR = Path.home() / ".hazel"
 CONFIG_FILE = Path(__file__).parent / "config.yaml"
-LLAMA_BIN = Path.home() / "llama.cpp" / "build" / "bin" / "llama-completion"
+import platform as _platform
+_IS_WINDOWS = _platform.system() == "Windows"
+_EXE = ".exe" if _IS_WINDOWS else ""
+LLAMA_BIN = Path.home() / "llama.cpp" / "build" / "bin" / f"llama-completion{_EXE}"
 HISTORY_FILE = HAZEL_DIR / "history"
 PROMPT_FILE = HAZEL_DIR / "prompt.txt"
 
@@ -630,20 +636,27 @@ def find_file(name):
 
 
 def search_file_contents(term):
-    """Search file contents using grep."""
+    """Search file contents."""
     home = str(Path.home())
+    matches = []
+    exts = {".txt", ".md", ".py", ".json", ".csv", ".sh", ".html", ".css", ".yaml", ".yml"}
     try:
-        result = subprocess.run(
-            ["grep", "-rl", "--include=*.txt", "--include=*.md",
-             "--include=*.py", "--include=*.json", "--include=*.csv",
-             "--include=*.sh", "--include=*.html", "--include=*.css",
-             "-i", term, home],
-            capture_output=True, text=True, timeout=10,
-        )
-        files = result.stdout.strip().split("\n")[:10]
-        return [os.path.relpath(f, home) for f in files if f]
+        for root, dirs, files in os.walk(home):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("node_modules", "__pycache__", "llama.cpp")]
+            for f in files:
+                if Path(f).suffix.lower() in exts:
+                    fp = os.path.join(root, f)
+                    try:
+                        with open(fp, "r", errors="ignore") as fh:
+                            if term.lower() in fh.read(50000).lower():
+                                matches.append(os.path.relpath(fp, home))
+                                if len(matches) >= 10:
+                                    return matches
+                    except Exception:
+                        pass
     except Exception:
-        return []
+        pass
+    return matches
 
 
 def format_size(size_bytes):
@@ -1422,7 +1435,7 @@ def run_llm(prompt_text, model_path, tokens, timeout, temp=None):
         f'-f "{PROMPT_FILE}" '
         f'-n {tokens} '
         f'-t {THREADS} --temp {t} --top-p 0.9 --no-display-prompt '
-        f'2>/dev/null'
+        f'{"2>NUL" if _IS_WINDOWS else "2>/dev/null"}'
     )
 
     try:
@@ -1612,10 +1625,18 @@ def get_face():
 
 def banner():
     face = get_face()
-    print(f"""
+    try:
+        print(f"""
 {BD}{G}  ╦ ╦╔═╗╔═╗╔═╗╦
   ╠═╣╠═╣╔═╝║╣ ║
   ╩ ╩╩ ╩╚═╝╚═╝╩═╝{X}  {face}
+ {D}{sys_overview()}
+ Type 'help' for commands. '!' for bash.{X}
+""")
+    except UnicodeEncodeError:
+        # Windows fallback
+        print(f"""
+{BD}{G}  H A Z E L{X}  {face}
  {D}{sys_overview()}
  Type 'help' for commands. '!' for bash.{X}
 """)
@@ -1647,11 +1668,12 @@ def first_boot():
 def main():
     HAZEL_DIR.mkdir(exist_ok=True)
 
-    try:
-        readline.read_history_file(str(HISTORY_FILE))
-    except FileNotFoundError:
-        pass
-    readline.set_history_length(500)
+    if readline:
+        try:
+            readline.read_history_file(str(HISTORY_FILE))
+        except FileNotFoundError:
+            pass
+        readline.set_history_length(500)
 
     first_boot()
     banner()
@@ -1666,7 +1688,8 @@ def main():
         if not user_input:
             continue
 
-        readline.write_history_file(str(HISTORY_FILE))
+        if readline:
+            readline.write_history_file(str(HISTORY_FILE))
 
         if user_input.lower() in ("exit", "quit", "bye", "q"):
             print(f"{D}bye!{X}")
