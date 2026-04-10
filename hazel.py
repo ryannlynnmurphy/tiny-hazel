@@ -32,7 +32,12 @@ _EXE = ".exe" if _IS_WINDOWS else ""
 _VULKAN_BIN = Path.home() / "llama.cpp" / "build" / "bin" / "vulkan" / f"llama-completion{_EXE}"
 _CPU_BIN = Path.home() / "llama.cpp" / "build" / "bin" / f"llama-completion{_EXE}"
 LLAMA_BIN = _VULKAN_BIN if _VULKAN_BIN.exists() else _CPU_BIN
-GPU_LAYERS = 99 if _VULKAN_BIN.exists() else 0  # Offload all layers to GPU if Vulkan
+GPU_LAYERS = 99 if _VULKAN_BIN.exists() else 0
+
+# Three-tier model routing
+MODEL_TIER1 = None  # TinyLlama: only for humanizing raw data
+MODEL_TIER2 = None  # Phi-3: default inference (normal questions)
+MODEL_TIER3 = None  # Mistral/Llama3: deep reasoning
 HISTORY_FILE = HAZEL_DIR / "history"
 PROMPT_FILE = HAZEL_DIR / "prompt.txt"
 
@@ -130,40 +135,45 @@ def get_installed_models():
 
 
 def auto_select_models():
-    """Pick the best models for this machine based on RAM and GPU."""
-    global MODEL_DEFAULT, MODEL_DEEP
+    """Pick the best models for this machine. Three tiers:
+    Tier 1 (TinyLlama): Only humanizes raw data into plain English
+    Tier 2 (Phi-3): Default inference for normal questions
+    Tier 3 (Mistral+): Deep reasoning, complex queries
+    """
+    global MODEL_DEFAULT, MODEL_DEEP, MODEL_TIER1, MODEL_TIER2, MODEL_TIER3
 
     ram = get_available_ram_gb()
     gpu = has_gpu()
     installed = get_installed_models()
 
-    # Preference order for default model (speed matters here)
-    # TinyLlama for fast responses, bigger models for deep thinking
-    if ram >= 8 and "phi3" in installed:
-        MODEL_DEFAULT = installed["phi3"]
-    elif "tinyllama" in installed:
-        MODEL_DEFAULT = installed["tinyllama"]
-    elif installed:
-        MODEL_DEFAULT = list(installed.values())[0]
-    else:
-        MODEL_DEFAULT = MODEL_DIR / MODEL_REGISTRY["tinyllama"][0]
+    # Tier 1: Always TinyLlama (fast, for humanizing data only)
+    MODEL_TIER1 = installed.get("tinyllama", MODEL_DIR / MODEL_REGISTRY["tinyllama"][0])
 
-    # Preference order for deep model (reasoning quality)
-    # Only use 7B models for deep if GPU available (CPU-only is too slow)
-    if gpu and ram >= 12 and "deepseek" in installed:
-        MODEL_DEEP = installed["deepseek"]
-    elif gpu and ram >= 12 and "llama3" in installed:
-        MODEL_DEEP = installed["llama3"]
-    elif gpu and ram >= 12 and "mistral" in installed:
-        MODEL_DEEP = installed["mistral"]
-    elif gpu and ram >= 12 and "qwen" in installed:
-        MODEL_DEEP = installed["qwen"]
-    elif ram >= 8 and "phi3" in installed:
-        MODEL_DEEP = installed["phi3"]
-    elif MODEL_DEFAULT:
-        MODEL_DEEP = MODEL_DEFAULT
+    # Tier 2: Mid-size model for normal inference
+    if "phi3" in installed:
+        MODEL_TIER2 = installed["phi3"]
+    elif "tinyllama" in installed:
+        MODEL_TIER2 = installed["tinyllama"]
     else:
-        MODEL_DEEP = MODEL_DIR / MODEL_REGISTRY["tinyllama"][0]
+        MODEL_TIER2 = MODEL_TIER1
+
+    # Tier 3: Largest available for deep reasoning (GPU preferred)
+    if gpu and ram >= 12 and "deepseek" in installed:
+        MODEL_TIER3 = installed["deepseek"]
+    elif gpu and ram >= 12 and "llama3" in installed:
+        MODEL_TIER3 = installed["llama3"]
+    elif gpu and ram >= 12 and "mistral" in installed:
+        MODEL_TIER3 = installed["mistral"]
+    elif gpu and ram >= 12 and "qwen" in installed:
+        MODEL_TIER3 = installed["qwen"]
+    elif "phi3" in installed:
+        MODEL_TIER3 = installed["phi3"]
+    else:
+        MODEL_TIER3 = MODEL_TIER2
+
+    # Set legacy aliases
+    MODEL_DEFAULT = MODEL_TIER2
+    MODEL_DEEP = MODEL_TIER3
 
     return ram, gpu, installed
 
@@ -1012,9 +1022,13 @@ def handle_instant(query):
         lines = [f"  {BD}Models:{X}"]
         lines.append(f"    System: {ram}GB RAM{', GPU detected' if gpu else ''}")
         lines.append(f"")
-        lines.append(f"    Active:")
-        lines.append(f"      Default: {MODEL_DEFAULT.name if MODEL_DEFAULT else 'none'}")
-        lines.append(f"      Deep:    {MODEL_DEEP.name if MODEL_DEEP else 'none'}")
+        lines.append(f"    Routing:")
+        t1 = MODEL_TIER1.name if MODEL_TIER1 and hasattr(MODEL_TIER1, 'name') else "none"
+        t2 = MODEL_TIER2.name if MODEL_TIER2 and hasattr(MODEL_TIER2, 'name') else "none"
+        t3 = MODEL_TIER3.name if MODEL_TIER3 and hasattr(MODEL_TIER3, 'name') else "none"
+        lines.append(f"      Tier 1 (humanize): {t1}")
+        lines.append(f"      Tier 2 (default):  {t2}")
+        lines.append(f"      Tier 3 (deep):     {t3}")
         lines.append(f"")
         lines.append(f"    Installed:")
         if installed:
@@ -1571,7 +1585,7 @@ def humanize(data, query):
         "<|assistant|>\n"
     )
 
-    result = run_llm(prompt, MODEL_DEFAULT, 60, 15, temp=0.5)
+    result = run_llm(prompt, MODEL_TIER1 or MODEL_DEFAULT, 60, 15, temp=0.5)
     if result and len(result) > 10:
         return result
     return clean
@@ -1607,6 +1621,7 @@ def ask_llm(user_input, context):
     model = MODEL_DEEP if deep else MODEL_DEFAULT
 
     if deep:
+        model = MODEL_TIER3 or MODEL_DEEP
         system_msg = (
             "You are Hazel, a computer assistant. "
             "Give thorough, complete answers. Always end with a complete sentence. "
@@ -1614,6 +1629,7 @@ def ask_llm(user_input, context):
             "To suggest a bash command write COMMAND: <cmd>"
         )
     else:
+        model = MODEL_TIER2 or MODEL_DEFAULT
         system_msg = (
             "You are Hazel, a computer assistant. "
             "Give short, helpful answers in 2-3 complete sentences. "
