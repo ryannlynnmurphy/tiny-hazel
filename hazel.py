@@ -36,11 +36,141 @@ HUMANIZE = True
 SHOW_RAW = True
 MEMORY_SIZE = 6
 
-# Model paths
-MODEL_TINYLLAMA = Path.home() / "models" / "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-MODEL_PHI3 = Path.home() / "models" / "Phi-3-mini-4k-instruct-q4.gguf"
-MODEL_DEFAULT = MODEL_TINYLLAMA
-MODEL_DEEP = MODEL_TINYLLAMA  # Changes to PHI3 if available and configured
+# Model registry: name → (filename, url, size_gb, min_ram_gb, description)
+MODEL_REGISTRY = {
+    "tinyllama": (
+        "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+        "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+        0.6, 2, "1.1B - Fast, basic (any machine)"
+    ),
+    "phi3": (
+        "Phi-3-mini-4k-instruct-q4.gguf",
+        "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf",
+        2.3, 4, "3.8B - Good reasoning, moderate speed"
+    ),
+    "mistral": (
+        "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+        "https://huggingface.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF/resolve/main/mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+        4.1, 8, "7B - Strong all-round, needs 8GB+"
+    ),
+    "llama3": (
+        "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        4.9, 8, "8B - Meta's best small model, needs 8GB+"
+    ),
+    "deepseek": (
+        "DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf",
+        "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf",
+        4.9, 8, "8B - Reasoning/chain-of-thought, needs 8GB+"
+    ),
+    "qwen": (
+        "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
+        4.4, 8, "7B - Best multilingual, needs 8GB+"
+    ),
+}
+
+MODEL_DIR = Path.home() / "models"
+MODEL_DEFAULT = None  # Set by auto_select_models()
+MODEL_DEEP = None
+
+
+def get_available_ram_gb():
+    """Total system RAM in GB."""
+    return round(psutil.virtual_memory().total / 1e9, 1)
+
+
+def has_gpu():
+    """Check if a GPU with VRAM is available."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return True
+    except (FileNotFoundError, Exception):
+        pass
+    # macOS Metal (Apple Silicon has unified memory, so RAM = VRAM)
+    try:
+        r = subprocess.run(["sysctl", "-n", "hw.memsize"],
+                          capture_output=True, text=True, timeout=2)
+        if r.returncode == 0:
+            import platform
+            if platform.machine() == "arm64":  # Apple Silicon
+                return True
+    except (FileNotFoundError, Exception):
+        pass
+    return False
+
+
+def get_installed_models():
+    """List models that are already downloaded."""
+    installed = {}
+    MODEL_DIR.mkdir(exist_ok=True)
+    for name, (filename, url, size, min_ram, desc) in MODEL_REGISTRY.items():
+        path = MODEL_DIR / filename
+        if path.exists():
+            installed[name] = path
+    return installed
+
+
+def auto_select_models():
+    """Pick the best models for this machine based on RAM and GPU."""
+    global MODEL_DEFAULT, MODEL_DEEP
+
+    ram = get_available_ram_gb()
+    gpu = has_gpu()
+    installed = get_installed_models()
+
+    # Preference order for default (fast) model
+    if ram >= 8 and "phi3" in installed:
+        MODEL_DEFAULT = installed["phi3"]
+    elif "tinyllama" in installed:
+        MODEL_DEFAULT = installed["tinyllama"]
+    elif installed:
+        MODEL_DEFAULT = list(installed.values())[0]
+    else:
+        MODEL_DEFAULT = MODEL_DIR / MODEL_REGISTRY["tinyllama"][0]
+
+    # Preference order for deep model (quality over speed)
+    if ram >= 12 and "llama3" in installed:
+        MODEL_DEEP = installed["llama3"]
+    elif ram >= 12 and "mistral" in installed:
+        MODEL_DEEP = installed["mistral"]
+    elif ram >= 12 and "deepseek" in installed:
+        MODEL_DEEP = installed["deepseek"]
+    elif ram >= 12 and "qwen" in installed:
+        MODEL_DEEP = installed["qwen"]
+    elif ram >= 8 and "phi3" in installed:
+        MODEL_DEEP = installed["phi3"]
+    elif "tinyllama" in installed:
+        MODEL_DEEP = installed["tinyllama"]
+    else:
+        MODEL_DEEP = MODEL_DEFAULT
+
+    return ram, gpu, installed
+
+
+def recommend_models():
+    """Suggest models the user should download."""
+    ram = get_available_ram_gb()
+    installed = get_installed_models()
+    recs = []
+
+    if ram >= 12:
+        for name in ["mistral", "llama3", "deepseek", "qwen"]:
+            if name not in installed:
+                _, _, size, _, desc = MODEL_REGISTRY[name]
+                recs.append((name, desc, size))
+    if ram >= 4 and "phi3" not in installed:
+        _, _, size, _, desc = MODEL_REGISTRY["phi3"]
+        recs.append(("phi3", desc, size))
+    if "tinyllama" not in installed:
+        _, _, size, _, desc = MODEL_REGISTRY["tinyllama"]
+        recs.append(("tinyllama", desc, size))
+
+    return recs
 
 
 def load_config():
@@ -106,26 +236,20 @@ def load_config():
     except (ValueError, TypeError):
         pass
 
+    # Model selection from config (overrides auto-select)
     mdl = config.get("model", {})
-    # Resolve model paths
-    if "path_tinyllama" in mdl:
-        p = Path(mdl["path_tinyllama"]).expanduser()
-        if p.exists():
-            global MODEL_TINYLLAMA
-            MODEL_TINYLLAMA = p
-    if "path_phi3" in mdl:
-        p = Path(mdl["path_phi3"]).expanduser()
-        if p.exists():
-            global MODEL_PHI3
-            MODEL_PHI3 = p
+    default_name = mdl.get("default", "")
+    deep_name = mdl.get("deep", "")
 
-    default_model = mdl.get("default", "tinyllama")
-    deep_model = mdl.get("deep", "tinyllama")
-
-    MODEL_DEFAULT = MODEL_PHI3 if default_model == "phi3" and MODEL_PHI3.exists() else MODEL_TINYLLAMA
-    MODEL_DEEP = MODEL_PHI3 if deep_model == "phi3" and MODEL_PHI3.exists() else MODEL_TINYLLAMA
+    installed = get_installed_models()
+    if default_name in installed:
+        MODEL_DEFAULT = installed[default_name]
+    if deep_name in installed:
+        MODEL_DEEP = installed[deep_name]
 
 
+# Auto-select models first, then config can override
+auto_select_models()
 load_config()
 
 DEEP_KEYWORDS = [
@@ -835,6 +959,81 @@ def handle_instant(query):
     """
     q = query.lower().strip()
 
+    # --- Model info (must be before hardware which also matches "model") ---
+    if q in ("model", "models", "what model", "which model"):
+        ram = get_available_ram_gb()
+        gpu = has_gpu()
+        installed = get_installed_models()
+        recs = recommend_models()
+
+        lines = [f"  {BD}Models:{X}"]
+        lines.append(f"    System: {ram}GB RAM{', GPU detected' if gpu else ''}")
+        lines.append(f"")
+        lines.append(f"    Active:")
+        lines.append(f"      Default: {MODEL_DEFAULT.name if MODEL_DEFAULT else 'none'}")
+        lines.append(f"      Deep:    {MODEL_DEEP.name if MODEL_DEEP else 'none'}")
+        lines.append(f"")
+        lines.append(f"    Installed:")
+        if installed:
+            for name, path in installed.items():
+                desc = MODEL_REGISTRY[name][4]
+                size = MODEL_REGISTRY[name][2]
+                active = ""
+                if MODEL_DEFAULT and path == MODEL_DEFAULT:
+                    active = " (active: default)"
+                elif MODEL_DEEP and path == MODEL_DEEP:
+                    active = " (active: deep)"
+                lines.append(f"      {name}: {desc} [{size}GB]{active}")
+        else:
+            lines.append(f"      none")
+
+        if recs:
+            lines.append(f"")
+            lines.append(f"    Recommended downloads:")
+            for name, desc, size in recs[:3]:
+                lines.append(f"      {G}download {name}{X} - {desc} [{size}GB]")
+
+        return "\n".join(lines), "skip"
+
+    # --- Download models ---
+    dm = re.match(r"download\s+(\S+)", q)
+    if dm:
+        name = dm.group(1).lower()
+        if name in MODEL_REGISTRY:
+            filename, url, size, min_ram, desc = MODEL_REGISTRY[name]
+            ram = get_available_ram_gb()
+            path = MODEL_DIR / filename
+
+            if path.exists():
+                return f"  {name} is already downloaded.", "skip"
+
+            warn = ""
+            if ram < min_ram:
+                warn = f"\n  {Y}Warning: You have {ram}GB RAM, this model needs {min_ram}GB+{X}"
+
+            return (
+                f"  Downloading {name} ({size}GB) - {desc}{warn}\n"
+                f"  COMMAND: mkdir -p {MODEL_DIR} && wget -q --show-progress -O {path} {url}"
+            ), True
+        else:
+            available = ", ".join(MODEL_REGISTRY.keys())
+            return f"  Unknown model '{name}'. Available: {available}", "skip"
+
+    # --- Config ---
+    if q in ("config", "settings", "preferences"):
+        if CONFIG_FILE.exists():
+            lines = [f"  {BD}Config:{X} {CONFIG_FILE}"]
+            lines.append(f"    Model (default): {MODEL_DEFAULT.name if MODEL_DEFAULT else 'none'}")
+            lines.append(f"    Model (deep): {MODEL_DEEP.name if MODEL_DEEP else 'none'}")
+            lines.append(f"    Tokens (normal/deep): {MAX_TOKENS}/{MAX_TOKENS_DEEP}")
+            lines.append(f"    Timeout (normal/deep): {TIMEOUT}s/{TIMEOUT_DEEP}s")
+            lines.append(f"    Humanize: {HUMANIZE}")
+            lines.append(f"    Show raw data: {SHOW_RAW}")
+            lines.append(f"    Memory turns: {MEMORY_SIZE}")
+            lines.append(f"\n    Edit: {G}! nano {CONFIG_FILE}{X}")
+            return "\n".join(lines), "skip"
+        return f"  No config file found at {CONFIG_FILE}", "skip"
+
     # --- System status ---
     if q in ("status", "stats", "system", "overview"):
         c = sys_cpu()
@@ -910,7 +1109,7 @@ def handle_instant(query):
         return f"  Uptime: {sys_uptime()}", False
 
     # --- Hardware info ---
-    if re.search(r"(hardware|board|model|pi info|about this|what (computer|pi|device)|specs)", q):
+    if re.search(r"(hardware|board|pi info|about this|what (computer|pi|device)|specs)", q):
         pi = sys_pi_info()
         k = sys_kernel()
         c = sys_cpu()
@@ -1141,43 +1340,6 @@ def handle_instant(query):
     # --- Shutdown ---
     if q in ("shutdown", "power off", "poweroff"):
         return "  COMMAND: sudo shutdown now", True
-
-    # --- Model info ---
-    if q in ("model", "models", "what model", "which model"):
-        lines = [f"  {BD}Models:{X}"]
-        lines.append(f"    Default: {MODEL_DEFAULT.name}")
-        lines.append(f"      {'exists' if MODEL_DEFAULT.exists() else 'NOT FOUND'}")
-        lines.append(f"    Deep thinking: {MODEL_DEEP.name}")
-        lines.append(f"      {'exists' if MODEL_DEEP.exists() else 'NOT FOUND'}")
-        if MODEL_PHI3.exists():
-            lines.append(f"\n    Phi-3 available. Edit config.yaml to use it.")
-        else:
-            lines.append(f"\n    Want smarter answers? Run:")
-            lines.append(f"    {G}download phi3{X}")
-        return "\n".join(lines), "skip"
-
-    # --- Download models ---
-    if q in ("download phi3", "get phi3", "install phi3"):
-        return (
-            f"  Downloading Phi-3 Mini (2.3GB)...\n"
-            f"  COMMAND: wget -q --show-progress -O {MODEL_PHI3} "
-            f"https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf"
-        ), True
-
-    # --- Config ---
-    if q in ("config", "settings", "preferences"):
-        if CONFIG_FILE.exists():
-            lines = [f"  {BD}Config:{X} {CONFIG_FILE}"]
-            lines.append(f"    Model (default): {MODEL_DEFAULT.name}")
-            lines.append(f"    Model (deep): {MODEL_DEEP.name}")
-            lines.append(f"    Tokens (normal/deep): {MAX_TOKENS}/{MAX_TOKENS_DEEP}")
-            lines.append(f"    Timeout (normal/deep): {TIMEOUT}s/{TIMEOUT_DEEP}s")
-            lines.append(f"    Humanize: {HUMANIZE}")
-            lines.append(f"    Show raw data: {SHOW_RAW}")
-            lines.append(f"    Memory turns: {MEMORY_SIZE}")
-            lines.append(f"\n    Edit: {G}! nano {CONFIG_FILE}{X}")
-            return "\n".join(lines), "skip"
-        return f"  No config file found at {CONFIG_FILE}", "skip"
 
     # --- Help ---
     if q in ("help", "?", "commands"):
