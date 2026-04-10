@@ -129,8 +129,15 @@ def auto_select_models():
     gpu = has_gpu()
     installed = get_installed_models()
 
-    # Preference order for default (fast) model
-    if ram >= 8 and "phi3" in installed:
+    # Preference order for default model
+    # On beefy machines (12GB+), use 7B model as default - it's fast enough on x86
+    if ram >= 12 and "mistral" in installed:
+        MODEL_DEFAULT = installed["mistral"]
+    elif ram >= 12 and "llama3" in installed:
+        MODEL_DEFAULT = installed["llama3"]
+    elif ram >= 12 and "qwen" in installed:
+        MODEL_DEFAULT = installed["qwen"]
+    elif ram >= 8 and "phi3" in installed:
         MODEL_DEFAULT = installed["phi3"]
     elif "tinyllama" in installed:
         MODEL_DEFAULT = installed["tinyllama"]
@@ -139,21 +146,21 @@ def auto_select_models():
     else:
         MODEL_DEFAULT = MODEL_DIR / MODEL_REGISTRY["tinyllama"][0]
 
-    # Preference order for deep model (quality over speed)
-    if ram >= 12 and "llama3" in installed:
+    # Preference order for deep model (reasoning quality)
+    if ram >= 12 and "deepseek" in installed:
+        MODEL_DEEP = installed["deepseek"]
+    elif ram >= 12 and "llama3" in installed:
         MODEL_DEEP = installed["llama3"]
     elif ram >= 12 and "mistral" in installed:
         MODEL_DEEP = installed["mistral"]
-    elif ram >= 12 and "deepseek" in installed:
-        MODEL_DEEP = installed["deepseek"]
     elif ram >= 12 and "qwen" in installed:
         MODEL_DEEP = installed["qwen"]
     elif ram >= 8 and "phi3" in installed:
         MODEL_DEEP = installed["phi3"]
-    elif "tinyllama" in installed:
-        MODEL_DEEP = installed["tinyllama"]
-    else:
+    elif MODEL_DEFAULT:
         MODEL_DEEP = MODEL_DEFAULT
+    else:
+        MODEL_DEEP = MODEL_DIR / MODEL_REGISTRY["tinyllama"][0]
 
     return ram, gpu, installed
 
@@ -242,15 +249,15 @@ def load_config():
     except (ValueError, TypeError):
         pass
 
-    # Model selection from config (overrides auto-select)
+    # Model selection from config (overrides auto-select unless "auto")
     mdl = config.get("model", {})
-    default_name = mdl.get("default", "")
-    deep_name = mdl.get("deep", "")
+    default_name = mdl.get("default", "auto")
+    deep_name = mdl.get("deep", "auto")
 
     installed = get_installed_models()
-    if default_name in installed:
+    if default_name != "auto" and default_name in installed:
         MODEL_DEFAULT = installed[default_name]
-    if deep_name in installed:
+    if deep_name != "auto" and deep_name in installed:
         MODEL_DEEP = installed[deep_name]
 
 
@@ -1441,12 +1448,16 @@ def run_llm(prompt_text, model_path, tokens, timeout, temp=None):
     ]
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
+        # Windows needs CREATE_NO_WINDOW to prevent console issues
+        kwargs = {
+            "capture_output": True,
+            "timeout": timeout,
+            "stdin": subprocess.DEVNULL,
+        }
+        if _IS_WINDOWS:
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+        result = subprocess.run(cmd, **kwargs)
         # Decode with error handling for Windows
         result.stdout = result.stdout.decode("utf-8", errors="replace") if isinstance(result.stdout, bytes) else result.stdout
         result.stderr = result.stderr.decode("utf-8", errors="replace") if isinstance(result.stderr, bytes) else result.stderr

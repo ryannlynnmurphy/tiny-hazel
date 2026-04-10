@@ -5,8 +5,8 @@
 # Available: tinyllama (fast, basic), phi3 (slower, smarter)
 # To use phi3, run: hazel --download-phi3
 model:
-  default: tinyllama
-  deep: tinyllama  # Change to "phi3" after downloading
+  default: auto
+  deep: auto  # Change to "phi3" after downloading
   path_tinyllama: ~/models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
   path_phi3: ~/models/Phi-3-mini-4k-instruct-q4.gguf
 
