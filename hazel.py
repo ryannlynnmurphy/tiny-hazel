@@ -141,13 +141,14 @@ def auto_select_models():
         MODEL_DEFAULT = MODEL_DIR / MODEL_REGISTRY["tinyllama"][0]
 
     # Preference order for deep model (reasoning quality)
-    if ram >= 12 and "deepseek" in installed:
+    # Only use 7B models for deep if GPU available (CPU-only is too slow)
+    if gpu and ram >= 12 and "deepseek" in installed:
         MODEL_DEEP = installed["deepseek"]
-    elif ram >= 12 and "llama3" in installed:
+    elif gpu and ram >= 12 and "llama3" in installed:
         MODEL_DEEP = installed["llama3"]
-    elif ram >= 12 and "mistral" in installed:
+    elif gpu and ram >= 12 and "mistral" in installed:
         MODEL_DEEP = installed["mistral"]
-    elif ram >= 12 and "qwen" in installed:
+    elif gpu and ram >= 12 and "qwen" in installed:
         MODEL_DEEP = installed["qwen"]
     elif ram >= 8 and "phi3" in installed:
         MODEL_DEEP = installed["phi3"]
