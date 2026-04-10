@@ -1378,7 +1378,9 @@ def handle_instant(query):
             f"  {G}Config:{X}\n"
             f"    config, model, download phi3\n\n"
             f"  {G}Power:{X}\n"
-            f"    ! <cmd>    Run bash directly\n"
+            f"    ! <cmd>    Run bash command\n"
+            f"    bash       Drop to full bash shell\n"
+            f"    clear      Clear screen\n"
             f"    exit       Quit Hazel"
         ), "skip"
 
@@ -1658,20 +1660,31 @@ def first_boot():
     if marker.exists():
         return
     marker.touch()
+
+    hostname = socket.gethostname()
+    ram = get_available_ram_gb()
+    installed = get_installed_models()
+    model_name = list(installed.keys())[0] if installed else "none"
+
     print(f"""
-{BD}{G}  Welcome to Hazel! {FACES['greeting']}{X}
+{BD}{G}  Welcome to Hazel OS! {FACES['greeting']}{X}
 
   I'm Hazel, your local AI assistant.
   I run entirely on this machine - no cloud, no tracking.
 
-  Try asking me:
-    {G}status{X}          - see how your system is doing
-    {G}open browser{X}    - launch Chromium
-    {G}find readme{X}     - search for files
-    {G}explain linux{X}   - I'll teach you
-    {G}help{X}            - see everything I can do
+  {D}System: {hostname} | {ram}GB RAM | Model: {model_name}{X}
 
-  Let's get started!
+  Try these:
+    {G}status{X}                see how your system is doing
+    {G}open browser{X}          launch an app
+    {G}find <filename>{X}       search for files
+    {G}explain what linux is{X} learn something new
+    {G}tutorial pi{X}           interactive walkthrough
+    {G}model{X}                 see available AI models
+    {G}help{X}                  everything I can do
+    {G}! <command>{X}           drop to bash anytime
+
+  {D}Hotkey: Super+H opens Hazel from anywhere on the desktop.{X}
 """)
 
 
@@ -1702,10 +1715,25 @@ def main():
             readline.write_history_file(str(HISTORY_FILE))
 
         if user_input.lower() in ("exit", "quit", "bye", "q"):
-            print(f"{D}bye!{X}")
+            print(f"{D}bye! {get_face()}{X}")
             break
 
-        # Raw bash
+        if user_input.lower() in ("clear", "cls"):
+            os.system("cls" if _IS_WINDOWS else "clear")
+            banner()
+            continue
+
+        # Drop to full bash session
+        if user_input.lower() in ("bash", "shell", "terminal"):
+            print(f"{D}Dropping to bash. Type 'exit' to return to Hazel.{X}\n")
+            subprocess.run(
+                os.environ.get("SHELL", "/bin/bash"),
+                stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr,
+            )
+            print(f"\n{G}Welcome back!{X}\n")
+            continue
+
+        # Raw bash (single command)
         if user_input.startswith("!"):
             cmd = user_input[1:].strip()
             if cmd:
