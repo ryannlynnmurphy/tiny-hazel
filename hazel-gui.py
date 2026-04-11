@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from hazel import (
     handle_instant, ask_llm, agent_step, get_llm_context, is_deep_query,
     extract_commands, run_cmd, is_dangerous, humanize, auto_provision,
-    download_model, auto_select_models,
+    download_model, auto_select_models, needs_context,
     sys_overview, sys_temp, get_face, remember, get_memory_context,
     HAZEL_DIR, MODEL_DEFAULT, MODEL_DEEP, get_installed_models,
     get_available_ram_gb, has_gpu, recommend_models, FACES,
@@ -628,6 +628,39 @@ def _handle_query():
         return jsonify({"response": "Say something!"})
 
     import re
+
+    # Context check: if query references previous results, skip instant handler
+    if needs_context(query):
+        context = get_llm_context(query)
+        start = time.time()
+        response = agent_step(query, context)
+        elapsed = time.time() - start
+
+        if response is None:
+            return jsonify({
+                "response": "Hmm, I couldn't figure that out. Try rephrasing?",
+                "timing": "timed out",
+            })
+
+        display, commands = extract_commands(response)
+        cmd_output = ""
+        dangerous_cmds = []
+        for cmd in commands:
+            if is_dangerous(cmd):
+                dangerous_cmds.append(cmd)
+            else:
+                cmd_output = run_cmd(cmd)
+
+        remember("user", query)
+        remember("hazel", display[:150])
+
+        return jsonify({
+            "response": display,
+            "commands": commands if commands else None,
+            "command_output": cmd_output if cmd_output else None,
+            "dangerous": dangerous_cmds if dangerous_cmds else None,
+            "timing": f"{elapsed:.1f}s",
+        })
 
     # Try instant handler
     instant = handle_instant(query)

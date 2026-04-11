@@ -483,6 +483,75 @@ X = "\033[0m"
 conversation_history = []
 NOTES_FILE = HAZEL_DIR / "notes.json"
 
+# Last result store — structured data from the most recent response
+last_result = {
+    "type": None,       # "file_search", "file_list", "system", "app", etc.
+    "query": None,      # what the user asked
+    "items": [],        # list of result items (file paths, names, etc.)
+    "summary": None,    # human-readable summary
+}
+
+
+def store_result(result_type, query, items, summary):
+    """Store the last significant result for context reference."""
+    last_result["type"] = result_type
+    last_result["query"] = query
+    last_result["items"] = items
+    last_result["summary"] = summary
+
+
+def get_last_result_context():
+    """Format last result for LLM context."""
+    if not last_result["type"]:
+        return ""
+    items_str = ""
+    if last_result["items"]:
+        numbered = []
+        for i, item in enumerate(last_result["items"][:15], 1):
+            if isinstance(item, tuple):
+                numbered.append(f"  {i}. {item[0]}")
+            else:
+                numbered.append(f"  {i}. {item}")
+        items_str = "\n".join(numbered)
+    return (
+        f"Last action: {last_result['summary']}\n"
+        f"Results:\n{items_str}"
+    )
+
+
+def needs_context(query):
+    """Detect if a query references previous results or conversation.
+    Returns True if this should skip the instant handler and go to LLM.
+    """
+    q = query.lower().strip()
+
+    # No previous results to reference
+    if not last_result["type"]:
+        return False
+
+    # Ordinals — "the first one", "open the second", "number 3"
+    if re.search(r"\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th)\b", q):
+        return True
+    if re.search(r"\b(number|#)\s*\d+\b", q):
+        return True
+
+    # Pronouns referencing results — "open it", "that file", "the one"
+    if re.search(r"\b(it|that|this|those|them|the one|the file|the folder)\b", q):
+        # Only if combined with an action word
+        if re.search(r"\b(open|read|show|delete|move|copy|rename|run|launch|cat|view)\b", q):
+            return True
+
+    # "the last one", "the top one", "the biggest"
+    if re.search(r"\b(last|top|bottom|biggest|smallest|newest|oldest|latest)\s+(one|file|result|match)\b", q):
+        return True
+
+    # Direct number reference — just "1" or "2" after a list
+    if re.match(r"^\d+$", q) and last_result["items"]:
+        return True
+
+    return False
+
+
 def remember(role, content):
     """Store conversation turn for context."""
     if MEMORY_SIZE == 0:
@@ -492,7 +561,7 @@ def remember(role, content):
         conversation_history.pop(0)
 
 def get_memory_context():
-    """Format recent conversation for LLM."""
+    """Format recent conversation for LLM, including last result."""
     parts = []
     if conversation_history:
         lines = []
@@ -500,13 +569,19 @@ def get_memory_context():
             if turn["role"] == "user":
                 lines.append(f"User said: {turn['content']}")
             else:
-                lines.append(f"You said: {turn['content'][:80]}")
-        parts.append("Recent conversation: " + ". ".join(lines))
+                lines.append(f"You said: {turn['content'][:150]}")
+        parts.append("Recent conversation:\n" + "\n".join(lines))
+
+    # Include last result for context
+    result_ctx = get_last_result_context()
+    if result_ctx:
+        parts.append(result_ctx)
+
     # Add persistent notes
     notes = load_notes()
     if notes:
         parts.append("Things I know: " + ". ".join(notes))
-    return ". ".join(parts)
+    return "\n".join(parts)
 
 def load_notes():
     """Load persistent user notes."""
@@ -1539,6 +1614,9 @@ def handle_instant(query):
             lines = [f"  Found {len(matches)} file(s) matching '{term}':"]
             for rel, size in matches:
                 lines.append(f"    ~/{rel}  ({format_size(size)})")
+            # Store results for context
+            store_result("file_search", term, matches,
+                         f"Found {len(matches)} files matching '{term}'")
             return "\n".join(lines), "skip"
         else:
             return f"  No files found matching '{term}'.", "skip"
@@ -1552,6 +1630,9 @@ def handle_instant(query):
             lines = [f"  Files containing '{term}':"]
             for f in matches:
                 lines.append(f"    ~/{f}")
+            store_result("content_search", term,
+                         [(f,) for f in matches],
+                         f"Found {len(matches)} files containing '{term}'")
             return "\n".join(lines), "skip"
         else:
             return f"  No files containing '{term}' found.", "skip"
@@ -1729,6 +1810,8 @@ def execute_tool(name, arg):
         if name == "find_file":
             matches = find_file(arg)
             if matches:
+                store_result("file_search", arg, matches,
+                             f"Found {len(matches)} files matching '{arg}'")
                 return "\n".join(f"~/{rel} ({format_size(size)})" for rel, size in matches)
             return f"No files matching '{arg}'"
         elif name == "search_contents":
@@ -2267,6 +2350,36 @@ def main():
             else:
                 # No tutorial, fall through to LLM
                 pass
+            continue
+
+        # === Context check: does this reference previous results? ===
+        if needs_context(user_input):
+            # Skip instant handler — let the LLM reason with context
+            deep = is_deep_query(user_input)
+            sys.stdout.write(f"{D}thinking...{X}")
+            sys.stdout.flush()
+
+            context = get_llm_context(user_input)
+            start = time.time()
+            response = agent_step(user_input, context)
+            elapsed = time.time() - start
+
+            sys.stdout.write("\r" + " " * 30 + "\r")
+            sys.stdout.flush()
+
+            if response:
+                display, commands = extract_commands(response)
+                if display:
+                    print(f"\n{B}{display}{X}")
+                print(f"{D}({elapsed:.1f}s){X}")
+                if commands:
+                    execute_commands(commands)
+            else:
+                print(f"{Y}Hmm, couldn't figure that out. Try rephrasing?{X}")
+
+            remember("user", user_input)
+            remember("hazel", display[:150] if response and display else "")
+            print()
             continue
 
         # === Try instant handler first ===
