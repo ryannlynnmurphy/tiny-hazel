@@ -956,10 +956,10 @@ def format_size(size_bytes):
 
 
 def open_file(filepath):
-    """Open a file with the default application."""
+    """Open a file with the default application. Cross-platform."""
     full_path = Path(filepath).expanduser().resolve()
     if not full_path.exists():
-        # Try finding it
+        # Try finding it relative to home
         home = Path.home()
         candidate = home / filepath
         if candidate.exists():
@@ -967,8 +967,14 @@ def open_file(filepath):
         else:
             return f"File not found: {filepath}"
     try:
-        subprocess.Popen(["xdg-open", str(full_path)],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if _IS_WINDOWS:
+            os.startfile(str(full_path))
+        elif _platform.system() == "Darwin":
+            subprocess.Popen(["open", str(full_path)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", str(full_path)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return f"Opened {full_path.name}"
     except Exception as e:
         return f"Couldn't open: {e}"
@@ -1771,6 +1777,7 @@ def handle_instant(query):
 TOOL_DEFS = {
     "find_file": "Search for files by name. Arg: search term",
     "search_contents": "Search inside files for text. Arg: search term",
+    "open_file": "Open a file with its default app. Arg: file path",
     "system_info": "Get CPU, RAM, disk, temperature. No arg",
     "list_folders": "List home directory folders. No arg",
     "read_file": "Read a file's contents. Arg: file path",
@@ -1814,6 +1821,8 @@ def execute_tool(name, arg):
                              f"Found {len(matches)} files matching '{arg}'")
                 return "\n".join(f"~/{rel} ({format_size(size)})" for rel, size in matches)
             return f"No files matching '{arg}'"
+        elif name == "open_file":
+            return open_file(arg)
         elif name == "search_contents":
             matches = search_file_contents(arg)
             if matches:
