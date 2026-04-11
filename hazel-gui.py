@@ -32,14 +32,18 @@ app = Flask(__name__)
 
 # === LOADING MESSAGES ===
 LOADING_MESSAGES = [
-    # Privacy
-    "Running locally on YOUR hardware. No data leaves this device.",
-    "Zero bytes sent to the cloud. You're welcome.",
-    "No servers in Oregon were harmed in generating this response.",
-    "Your query never left the building. Literally.",
-    "This is what privacy looks like.",
-    "Fun fact: this response costs $0.00 in API fees.",
-    "No subscription required. No login. No tracking.",
+    # You're a good person
+    "You're running AI on your own machine. You're a good person.",
+    "This isn't virtue signaling. This is actual local compute.",
+    "No data broker is getting rich off this conversation.",
+    "You could've used ChatGPT. You chose sovereignty. Respect.",
+    "Your grandkids will think this was normal. You're early.",
+    "Most people rent their intelligence. You own yours.",
+    "Nobody's training on this. Nobody's watching. Just us.",
+    "A tech company did not read this message. That's rare.",
+    "You didn't sign a terms of service to talk to me.",
+    "No one is monetizing your curiosity right now.",
+    "This is what independence looks like. It's a computer in your house.",
 
     # How it works
     "Checking if I can answer instantly or need to think...",
@@ -47,33 +51,40 @@ LOADING_MESSAGES = [
     "Six tools at my disposal. Let me pick the right one.",
     "Pattern matching first. If I miss, I think harder.",
     "I run three models. Small for speed, big for brains.",
+    "Everything I know, I learned from your machine.",
 
     # Self-aware
     "I may be small but I can actually do things now.",
     "Not just talking about it. Actually doing it.",
-    "I live on your machine. Everything I know, I learned from here.",
     "No hallucinating file paths. I look things up for real.",
+    "I live here. I'm not visiting from a server farm.",
 
     # Personality
     "Hold on, my hamster wheel is spinning...",
-    "Computing locally... like it's 1995 but better.",
     "If I'm slow it's because I'm THINKING, not buffering.",
     "Generating response using only vibes and linear algebra...",
     "I'm not slow, I'm thoughtful.",
     "Processing... with zero venture capital...",
     "One sec, checking the actual answer instead of guessing...",
+    "Fun fact: this response costs $0.00 in API fees.",
+    "No subscription required. No login. No tracking. No kidding.",
+    "This whole conversation runs on less power than your desk lamp.",
     "Doing real work on your real machine with real files.",
+    "Meanwhile, a data center somewhere just used a swimming pool of water.",
+    "You didn't need to be online for this. Think about that.",
 ]
 
 DEEP_LOADING_MESSAGES = [
-    "Deep thinking mode. Switching to the bigger model.",
+    "Deep thinking mode. You're worth the extra watts.",
     "This one deserves the full brain. Give me a moment.",
     "Complex question detected. Engaging all cores.",
     "Loading the heavy model. Like putting on my reading glasses.",
     "Pulling out the 7 billion parameter brain for this one.",
     "Deep thinking... searching, reading, reasoning.",
-    "Big question. Big model. Real answers.",
+    "Big question. Big model. Real answers. Your machine.",
     "This is where tool use really shines. Hang on.",
+    "Switching to the bigger model. Still local. Still yours.",
+    "Nobody's billing you per token for this. Take your time.",
 ]
 
 
@@ -255,17 +266,31 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         .loading-msg {
-            font-size: 16px;
+            font-size: 20px;
             color: var(--text-dim);
             font-style: italic;
             text-align: center;
-            padding: 8px 16px;
+            padding: 16px 20px;
             animation: loadFadeIn 0.4s ease-out;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
         }
 
         .loading-msg .loading-text {
             display: inline-block;
             animation: loadCycle 0.4s ease-out;
+            max-width: 500px;
+            line-height: 1.4;
+        }
+
+        .loading-msg .loading-timer {
+            font-size: 12px;
+            font-style: normal;
+            color: var(--green-dim);
+            font-family: 'Consolas', 'Monaco', monospace;
+            letter-spacing: 1px;
         }
 
         @keyframes loadFadeIn {
@@ -436,6 +461,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         let loadingInterval = null;
+        let timerInterval = null;
 
         function setThinking(isDeep) {
             face.className = 'face thinking';
@@ -443,28 +469,41 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             face.textContent = '(-_-)';
 
             const msgs = isDeep ? deepLoadingMessages : loadingMessages;
-            // Shuffle and pick a sequence to cycle through
             const shuffled = [...msgs].sort(() => Math.random() - 0.5);
             let idx = 0;
+            let elapsed = 0;
 
             const div = document.createElement('div');
             div.className = 'message system loading-msg';
+
             const span = document.createElement('span');
             span.className = 'loading-text';
             span.textContent = shuffled[idx];
             div.appendChild(span);
+
+            const timer = document.createElement('span');
+            timer.className = 'loading-timer';
+            timer.textContent = '0.0s';
+            div.appendChild(timer);
+
             chat.appendChild(div);
             chat.scrollTop = chat.scrollHeight;
 
-            // Cycle to next message every 2.5s
+            // Cycle messages every 3s
             loadingInterval = setInterval(() => {
                 idx = (idx + 1) % shuffled.length;
                 span.style.animation = 'none';
-                span.offsetHeight; // force reflow
+                span.offsetHeight;
                 span.style.animation = 'loadCycle 0.4s ease-out';
                 span.textContent = shuffled[idx];
                 chat.scrollTop = chat.scrollHeight;
-            }, 2500);
+            }, 3000);
+
+            // Update timer every 100ms
+            timerInterval = setInterval(() => {
+                elapsed += 0.1;
+                timer.textContent = elapsed.toFixed(1) + 's';
+            }, 100);
 
             return div;
         }
@@ -473,6 +512,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             if (loadingInterval) {
                 clearInterval(loadingInterval);
                 loadingInterval = null;
+            }
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
             }
             face.className = 'face';
             faceLabel.textContent = 'online';
