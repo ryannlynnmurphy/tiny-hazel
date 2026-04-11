@@ -134,11 +134,15 @@ def get_installed_models():
     return installed
 
 
+# Tier 3 preference order: best reasoning models first
+TIER3_PREFERENCE = ["deepseek", "llama3", "mistral", "qwen"]
+
+
 def auto_select_models():
     """Pick the best models for this machine. Three tiers:
     Tier 1 (TinyLlama): Only humanizes raw data into plain English
     Tier 2 (Phi-3): Default inference for normal questions
-    Tier 3 (Mistral+): Deep reasoning, complex queries
+    Tier 3 (7B+): Deep reasoning, complex queries, tool use
     """
     global MODEL_DEFAULT, MODEL_DEEP, MODEL_TIER1, MODEL_TIER2, MODEL_TIER3
 
@@ -157,19 +161,15 @@ def auto_select_models():
     else:
         MODEL_TIER2 = MODEL_TIER1
 
-    # Tier 3: Largest available for deep reasoning (GPU preferred)
-    if gpu and ram >= 12 and "deepseek" in installed:
-        MODEL_TIER3 = installed["deepseek"]
-    elif gpu and ram >= 12 and "llama3" in installed:
-        MODEL_TIER3 = installed["llama3"]
-    elif gpu and ram >= 12 and "mistral" in installed:
-        MODEL_TIER3 = installed["mistral"]
-    elif gpu and ram >= 12 and "qwen" in installed:
-        MODEL_TIER3 = installed["qwen"]
-    elif "phi3" in installed:
-        MODEL_TIER3 = installed["phi3"]
-    else:
-        MODEL_TIER3 = MODEL_TIER2
+    # Tier 3: Best available 7B+ model (8GB+ RAM)
+    MODEL_TIER3 = None
+    if ram >= 8:
+        for name in TIER3_PREFERENCE:
+            if name in installed:
+                MODEL_TIER3 = installed[name]
+                break
+    if MODEL_TIER3 is None:
+        MODEL_TIER3 = MODEL_TIER2  # fall back to Tier 2
 
     # Set legacy aliases
     MODEL_DEFAULT = MODEL_TIER2
@@ -179,19 +179,25 @@ def auto_select_models():
 
 
 def recommend_models():
-    """Suggest models the user should download."""
+    """Suggest models the user could download (beyond what auto-provision handles)."""
     ram = get_available_ram_gb()
     installed = get_installed_models()
     recs = []
 
-    if ram >= 12:
-        for name in ["mistral", "llama3", "deepseek", "qwen"]:
+    # Recommend any 7B+ models they don't have yet (if hardware supports it)
+    if ram >= 8:
+        for name in TIER3_PREFERENCE:
             if name not in installed:
-                _, _, size, _, desc = MODEL_REGISTRY[name]
-                recs.append((name, desc, size))
+                _, _, size, min_ram, desc = MODEL_REGISTRY[name]
+                if ram >= min_ram:
+                    recs.append((name, desc, size))
+
+    # Recommend Phi-3 if missing
     if ram >= 4 and "phi3" not in installed:
         _, _, size, _, desc = MODEL_REGISTRY["phi3"]
         recs.append(("phi3", desc, size))
+
+    # Recommend TinyLlama if somehow missing
     if "tinyllama" not in installed:
         _, _, size, _, desc = MODEL_REGISTRY["tinyllama"]
         recs.append(("tinyllama", desc, size))
@@ -215,6 +221,10 @@ def download_model(name):
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".download")
+
+    # Clean up any partial download from a previous interrupted run
+    if tmp_path.exists():
+        tmp_path.unlink()
 
     print(f"  {G}Downloading {name}{X} ({size_gb}GB) - {desc}")
 
@@ -273,14 +283,17 @@ def get_needed_models():
     if ram >= 4 and "phi3" not in installed:
         needed.append("phi3")
 
-    # Tier 3: need one 7B model if we have RAM + GPU
-    if ram >= 8 and gpu:
-        has_7b = any(
-            name in installed
-            for name in ["mistral", "llama3", "deepseek", "qwen"]
-        )
+    # Tier 3: need one 7B model if we have 8GB+ RAM
+    # GPU helps a lot but isn't required — CPU inference works, just slower
+    if ram >= 8:
+        has_7b = any(name in installed for name in TIER3_PREFERENCE)
         if not has_7b:
-            needed.append("mistral")  # default Tier 3 pick
+            # Pick best model that fits: DeepSeek for reasoning if enough space
+            for name in TIER3_PREFERENCE:
+                _, _, size_gb, min_ram, _ = MODEL_REGISTRY[name]
+                if ram >= min_ram:
+                    needed.append(name)
+                    break
 
     return needed
 
@@ -305,9 +318,21 @@ def auto_provision():
         print(f"  {D}Connect to wifi and restart Hazel to auto-download.{X}\n")
         return
 
-    print(f"\n{BD}{G}  Setting up Hazel for this machine...{X}")
-    print(f"  {D}Hardware: {ram}GB RAM{', GPU detected' if gpu else ''}{X}")
-    print(f"  {D}Models needed: {', '.join(needed)}{X}\n")
+    # Explain the plan
+    print(f"\n{BD}{G}  Setting up Hazel for this machine...{X}\n")
+    print(f"  {BD}Hardware detected:{X}")
+    print(f"    RAM:  {ram}GB")
+    print(f"    GPU:  {'yes' if gpu else 'no (CPU inference)'}")
+    print()
+    print(f"  {BD}Model plan:{X}")
+    for name in needed:
+        _, _, size_gb, _, desc = MODEL_REGISTRY[name]
+        tier = "Tier 1 (speed)" if name == "tinyllama" else \
+               "Tier 2 (default)" if name == "phi3" else "Tier 3 (deep)"
+        print(f"    {tier}: {name} - {desc} [{size_gb}GB]")
+    total_gb = sum(MODEL_REGISTRY[n][2] for n in needed)
+    print(f"    Total download: {total_gb:.1f}GB")
+    print()
 
     for name in needed:
         success = download_model(name)
