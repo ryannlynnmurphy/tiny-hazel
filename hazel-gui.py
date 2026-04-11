@@ -690,7 +690,7 @@ def main():
     print(f"  Press Ctrl+C to stop\n")
 
     # Don't open browser - the launcher script handles that
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
 
 if __name__ == "__main__":
