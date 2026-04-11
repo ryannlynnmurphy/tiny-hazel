@@ -1542,6 +1542,77 @@ def handle_instant(query):
 
 
 # =============================================
+# TOOL SYSTEM (agentic layer)
+# =============================================
+
+TOOL_DEFS = {
+    "find_file": "Search for files by name. Arg: search term",
+    "search_contents": "Search inside files for text. Arg: search term",
+    "system_info": "Get CPU, RAM, disk, temperature. No arg",
+    "list_folders": "List home directory folders. No arg",
+    "read_file": "Read a file's contents. Arg: file path",
+    "run_command": "Run a shell command. Arg: command",
+}
+
+TOOL_CALL_RE = re.compile(r'\[TOOL:\s*(\w+)\(([^)]*)\)\]')
+
+
+def build_tool_prompt():
+    """Format tool descriptions for the LLM system prompt."""
+    lines = []
+    for name, desc in TOOL_DEFS.items():
+        lines.append(f"  - {name}: {desc}")
+    return "\n".join(lines)
+
+
+def parse_tool_calls(text):
+    """Extract tool calls from LLM output."""
+    calls = []
+    for match in TOOL_CALL_RE.finditer(text):
+        name = match.group(1).strip()
+        arg = match.group(2).strip().strip('"').strip("'")
+        if name in TOOL_DEFS:
+            calls.append((name, arg))
+    return calls
+
+
+def strip_tool_calls(text):
+    """Remove tool call syntax from text for display."""
+    return TOOL_CALL_RE.sub("", text).strip()
+
+
+def execute_tool(name, arg):
+    """Execute a tool and return the result as a string."""
+    try:
+        if name == "find_file":
+            matches = find_file(arg)
+            if matches:
+                return "\n".join(f"~/{rel} ({format_size(size)})" for rel, size in matches)
+            return f"No files matching '{arg}'"
+        elif name == "search_contents":
+            matches = search_file_contents(arg)
+            if matches:
+                return "\n".join(f"~/{f}" for f in matches)
+            return f"No files containing '{arg}'"
+        elif name == "system_info":
+            return sys_overview()
+        elif name == "list_folders":
+            return ", ".join(sys_dirs())
+        elif name == "read_file":
+            p = Path(arg).expanduser().resolve()
+            content = p.read_text(errors="ignore")
+            return content[:2000] + ("..." if len(content) > 2000 else "")
+        elif name == "run_command":
+            if is_dangerous(arg):
+                return "BLOCKED: this command needs user confirmation first."
+            output = run_cmd(arg)
+            return output[:2000] if output else "(no output)"
+    except Exception as e:
+        return f"Error: {e}"
+    return f"Unknown tool: {name}"
+
+
+# =============================================
 # PART 6: LLM
 # =============================================
 
@@ -1720,6 +1791,94 @@ def ask_llm(user_input, context):
     )
 
     return run_llm(prompt, model, tokens, timeout)
+
+
+def ask_llm_with_tools(user_input, context):
+    """Query LLM with tool descriptions in the prompt."""
+    deep = is_deep_query(user_input)
+    tokens = MAX_TOKENS_DEEP if deep else MAX_TOKENS
+    timeout = TIMEOUT_DEEP if deep else TIMEOUT
+    model = (MODEL_TIER3 or MODEL_DEEP) if deep else (MODEL_TIER2 or MODEL_DEFAULT)
+
+    tool_desc = build_tool_prompt()
+
+    system_msg = (
+        "You are Hazel, a local AI assistant created by Ryann Lynn Murphy. "
+        "You run on this computer with no cloud connection.\n\n"
+        "You have tools. To use one, write on its own line:\n"
+        "[TOOL: tool_name(\"argument\")]\n"
+        "For no-argument tools: [TOOL: tool_name()]\n\n"
+        f"Available tools:\n{tool_desc}\n\n"
+        "Use a tool when you need to look something up or take action. "
+        "If no tool is needed, just answer directly in 2-3 sentences."
+    )
+
+    prompt = (
+        f"<|system|>\n{system_msg}\n"
+        f"Computer: {context}</s>\n"
+        f"<|user|>\n{user_input}</s>\n"
+        "<|assistant|>\n"
+    )
+
+    return run_llm(prompt, model, tokens, timeout)
+
+
+def ask_llm_with_results(user_input, context, tool_results):
+    """Follow-up LLM call with tool results for a natural response."""
+    deep = is_deep_query(user_input)
+    tokens = MAX_TOKENS_DEEP if deep else MAX_TOKENS
+    timeout = TIMEOUT_DEEP if deep else TIMEOUT
+    model = (MODEL_TIER3 or MODEL_DEEP) if deep else (MODEL_TIER2 or MODEL_DEFAULT)
+
+    results_text = "\n".join(tool_results)
+
+    system_msg = (
+        "You are Hazel, a local AI assistant created by Ryann Lynn Murphy. "
+        "You run on this computer with no cloud. "
+        "Answer using the tool results below. Be conversational and concise."
+    )
+
+    prompt = (
+        f"<|system|>\n{system_msg}</s>\n"
+        f"<|user|>\n{user_input}</s>\n"
+        "<|assistant|>\n"
+        f"[Tool results]\n{results_text}\n[/Tool results]\n\n"
+    )
+
+    return run_llm(prompt, model, tokens, timeout)
+
+
+def agent_step(user_input, context):
+    """Tool-augmented LLM response. Two-pass: tools then answer."""
+    # Pass 1: LLM may call tools
+    response = ask_llm_with_tools(user_input, context)
+    if response is None:
+        return None
+
+    # Check for tool calls
+    tool_calls = parse_tool_calls(response)
+    if not tool_calls:
+        return response  # No tools needed, return as-is
+
+    # Execute tools
+    tool_results = []
+    for name, arg in tool_calls:
+        result = execute_tool(name, arg)
+        tool_results.append(f"{name}({arg}):\n{result}")
+
+    # Pass 2: LLM responds naturally with tool results
+    final = ask_llm_with_results(user_input, context, tool_results)
+    if final:
+        return final
+
+    # Fallback: show tool results directly if Pass 2 fails
+    clean = strip_tool_calls(response)
+    parts = []
+    if clean:
+        parts.append(clean)
+    for tr in tool_results:
+        parts.append(tr)
+    return "\n".join(parts)
 
 
 # =============================================
@@ -2019,7 +2178,7 @@ def main():
                     remember("hazel", f"Found files matching {user_input}")
                     continue
 
-        # === Fall back to LLM ===
+        # === Fall back to LLM (with tools) ===
         deep = is_deep_query(user_input)
         if deep:
             sys.stdout.write(f"{D}thinking deeply...{X}")
@@ -2029,7 +2188,7 @@ def main():
 
         context = get_llm_context(user_input)
         start = time.time()
-        response = ask_llm(user_input, context)
+        response = agent_step(user_input, context)
         elapsed = time.time() - start
 
         sys.stdout.write("\r" + " " * 30 + "\r")
