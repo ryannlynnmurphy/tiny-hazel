@@ -20,7 +20,7 @@ from flask import Flask, render_template_string, request, jsonify, Response
 sys.path.insert(0, str(Path(__file__).parent))
 from hazel import (
     handle_instant, ask_llm, agent_step, get_llm_context, is_deep_query,
-    extract_commands, run_cmd, is_dangerous, humanize,
+    extract_commands, run_cmd, is_dangerous, humanize, auto_provision,
     sys_overview, sys_temp, get_face, remember, get_memory_context,
     HAZEL_DIR, MODEL_DEFAULT, MODEL_DEEP, get_installed_models,
     get_available_ram_gb, has_gpu, recommend_models, FACES,
@@ -660,6 +660,9 @@ def _handle_query():
 
 
 def main():
+    # Auto-download models this machine needs
+    auto_provision()
+
     port = 3000
 
     print(f"\n  HAZEL OS - GUI")

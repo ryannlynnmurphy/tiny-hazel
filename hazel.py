@@ -199,6 +199,126 @@ def recommend_models():
     return recs
 
 
+def download_model(name):
+    """Download a model with progress. Returns True on success."""
+    import urllib.request
+
+    if name not in MODEL_REGISTRY:
+        print(f"  {R}Unknown model: {name}{X}")
+        return False
+
+    filename, url, size_gb, min_ram, desc = MODEL_REGISTRY[name]
+    path = MODEL_DIR / filename
+
+    if path.exists():
+        return True
+
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".download")
+
+    print(f"  {G}Downloading {name}{X} ({size_gb}GB) - {desc}")
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Hazel/1.0"})
+        resp = urllib.request.urlopen(req, timeout=30)
+        total = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
+        chunk_size = 1024 * 256  # 256KB chunks
+
+        with open(tmp_path, "wb") as f:
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                f.write(chunk)
+                downloaded += len(chunk)
+                if total > 0:
+                    pct = downloaded * 100 // total
+                    mb_done = downloaded // (1024 * 1024)
+                    mb_total = total // (1024 * 1024)
+                    bar = "#" * (pct // 5) + "-" * (20 - pct // 5)
+                    sys.stdout.write(
+                        f"\r  [{bar}] {pct}%  {mb_done}/{mb_total}MB"
+                    )
+                    sys.stdout.flush()
+
+        # Rename temp file to final
+        tmp_path.rename(path)
+        print(f"\r  {'=' * 40}")
+        print(f"  {G}{name} ready.{X}")
+        return True
+
+    except Exception as e:
+        print(f"\n  {R}Download failed: {e}{X}")
+        if tmp_path.exists():
+            tmp_path.unlink()
+        return False
+
+
+def get_needed_models():
+    """Decide which models this machine needs based on hardware.
+    Returns a list of model names to download, in order.
+    Only picks what's needed to fill all three tiers — not everything.
+    """
+    ram = get_available_ram_gb()
+    gpu = has_gpu()
+    installed = get_installed_models()
+    needed = []
+
+    # Tier 1: always need TinyLlama
+    if "tinyllama" not in installed:
+        needed.append("tinyllama")
+
+    # Tier 2: need Phi-3 if we have the RAM
+    if ram >= 4 and "phi3" not in installed:
+        needed.append("phi3")
+
+    # Tier 3: need one 7B model if we have RAM + GPU
+    if ram >= 8 and gpu:
+        has_7b = any(
+            name in installed
+            for name in ["mistral", "llama3", "deepseek", "qwen"]
+        )
+        if not has_7b:
+            needed.append("mistral")  # default Tier 3 pick
+
+    return needed
+
+
+def auto_provision():
+    """Scan hardware and auto-download the right models for this machine.
+    Runs on every boot, but only downloads what's missing.
+    """
+    needed = get_needed_models()
+    if not needed:
+        return  # already provisioned
+
+    ram = get_available_ram_gb()
+    gpu = has_gpu()
+
+    # Check internet before trying downloads
+    try:
+        socket.create_connection(("1.1.1.1", 53), timeout=3)
+    except OSError:
+        print(f"\n  {Y}No internet connection. Skipping model downloads.{X}")
+        print(f"  {D}Models needed: {', '.join(needed)}{X}")
+        print(f"  {D}Connect to wifi and restart Hazel to auto-download.{X}\n")
+        return
+
+    print(f"\n{BD}{G}  Setting up Hazel for this machine...{X}")
+    print(f"  {D}Hardware: {ram}GB RAM{', GPU detected' if gpu else ''}{X}")
+    print(f"  {D}Models needed: {', '.join(needed)}{X}\n")
+
+    for name in needed:
+        success = download_model(name)
+        if not success:
+            print(f"  {Y}Continuing without {name}.{X}")
+        print()
+
+    # Re-run model selection with new models
+    auto_select_models()
+
+
 def load_config():
     """Load config.yaml and apply settings."""
     global MAX_TOKENS, MAX_TOKENS_DEEP, TIMEOUT, TIMEOUT_DEEP
@@ -2006,28 +2126,34 @@ def first_boot():
 
     hostname = socket.gethostname()
     ram = get_available_ram_gb()
+    gpu = has_gpu()
     installed = get_installed_models()
-    model_name = list(installed.keys())[0] if installed else "none"
+
+    # Show what got set up
+    t1 = MODEL_TIER1.name if MODEL_TIER1 and hasattr(MODEL_TIER1, 'name') else "none"
+    t2 = MODEL_TIER2.name if MODEL_TIER2 and hasattr(MODEL_TIER2, 'name') else "none"
+    t3 = MODEL_TIER3.name if MODEL_TIER3 and hasattr(MODEL_TIER3, 'name') else "none"
 
     print(f"""
-{BD}{G}  Welcome to Hazel OS! {FACES['greeting']}{X}
+{BD}{G}  Welcome to Hazel! {FACES['greeting']}{X}
 
   I'm Hazel, your local AI assistant.
   I run entirely on this machine - no cloud, no tracking.
 
-  {D}System: {hostname} | {ram}GB RAM | Model: {model_name}{X}
+  {BD}Your system:{X}
+    {hostname} | {ram}GB RAM{' | GPU detected' if gpu else ''} | {len(installed)} model(s) ready
+
+  {BD}Model routing:{X}
+    Speed:    {t1}
+    Default:  {t2}
+    Deep:     {t3}
 
   Try these:
     {G}status{X}                see how your system is doing
-    {G}open browser{X}          launch an app
     {G}find <filename>{X}       search for files
-    {G}explain what linux is{X} learn something new
-    {G}tutorial pi{X}           interactive walkthrough
-    {G}model{X}                 see available AI models
+    {G}explain what linux is{X} ask me anything
+    {G}model{X}                 see model details
     {G}help{X}                  everything I can do
-    {G}! <command>{X}           drop to bash anytime
-
-  {D}Hotkey: Super+H opens Hazel from anywhere on the desktop.{X}
 """)
 
 
@@ -2040,6 +2166,9 @@ def main():
         except FileNotFoundError:
             pass
         readline.set_history_length(500)
+
+    # Auto-download models this machine needs (skips if already provisioned)
+    auto_provision()
 
     first_boot()
     banner()
