@@ -1227,20 +1227,24 @@ def handle_instant(query):
         name = dm.group(1).lower()
         if name in MODEL_REGISTRY:
             filename, url, size, min_ram, desc = MODEL_REGISTRY[name]
-            ram = get_available_ram_gb()
             path = MODEL_DIR / filename
 
             if path.exists():
                 return f"  {name} is already downloaded.", "skip"
 
-            warn = ""
+            ram = get_available_ram_gb()
             if ram < min_ram:
-                warn = f"\n  {Y}Warning: You have {ram}GB RAM, this model needs {min_ram}GB+{X}"
+                print(f"\n  {Y}Warning: You have {ram}GB RAM, this model needs {min_ram}GB+{X}")
 
-            return (
-                f"  Downloading {name} ({size}GB) - {desc}{warn}\n"
-                f"  COMMAND: mkdir -p {MODEL_DIR} && wget -q --show-progress -O {path} {url}"
-            ), True
+            # Download using Python (cross-platform, no wget needed)
+            success = download_model(name)
+            if success:
+                # Re-run model selection to pick up the new model
+                auto_select_models()
+                t3 = MODEL_TIER3.name if MODEL_TIER3 and hasattr(MODEL_TIER3, 'name') else "none"
+                return f"  {name} installed. Tier 3 (deep) is now: {t3}", "skip"
+            else:
+                return f"  {R}Failed to download {name}.{X}", "skip"
         else:
             available = ", ".join(MODEL_REGISTRY.keys())
             return f"  Unknown model '{name}'. Available: {available}", "skip"
