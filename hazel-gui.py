@@ -19,7 +19,7 @@ from flask import Flask, render_template_string, request, jsonify, Response
 # Import hazel core
 sys.path.insert(0, str(Path(__file__).parent))
 from hazel import (
-    handle_instant, ask_llm, get_llm_context, is_deep_query,
+    handle_instant, ask_llm, agent_step, get_llm_context, is_deep_query,
     extract_commands, run_cmd, is_dangerous, humanize,
     sys_overview, sys_temp, get_face, remember, get_memory_context,
     HAZEL_DIR, MODEL_DEFAULT, MODEL_DEEP, get_installed_models,
@@ -29,56 +29,50 @@ from hazel import (
 
 app = Flask(__name__)
 
-# === LOADING MESSAGES (funny, educational) ===
+# === LOADING MESSAGES ===
 LOADING_MESSAGES = [
     # Privacy
     "Running locally on YOUR hardware. No data leaves this device.",
     "Zero bytes sent to the cloud. You're welcome.",
-    "This thought is happening on a chip the size of a credit card.",
     "No servers in Oregon were harmed in generating this response.",
     "Your query never left the building. Literally.",
-    "Meanwhile, ChatGPT just used enough water to fill a bathtub.",
-    "This is what privacy looks like. It's a Raspberry Pi.",
+    "This is what privacy looks like.",
     "Fun fact: this response costs $0.00 in API fees.",
+    "No subscription required. No login. No tracking.",
 
-    # Environment
-    "Drawing about 8 watts right now. A light bulb uses more.",
-    "Carbon footprint of this query: basically a hamster breathing.",
-    "Big Tech needs a nuclear reactor. We need a USB-C cable.",
-    "Data centers use 5 million gallons of water a day. We use a cup of tea.",
-    "The planet thanks you for computing locally.",
-    "8 watts of power. Not 8 megawatts. Just 8.",
+    # How it works
+    "Checking if I can answer instantly or need to think...",
+    "I can search your files, read them, check your system, and run commands.",
+    "Six tools at my disposal. Let me pick the right one.",
+    "Pattern matching first. If I miss, I think harder.",
+    "I run three models. Small for speed, big for brains.",
 
     # Self-aware
-    "I'm a 1 billion parameter model. GPT-4 has 1.7 trillion. I'm trying my best.",
-    "Thinking with my whole 638 megabytes of brain...",
-    "I may be tiny but I'm all yours.",
-    "Running on ARM. Like your phone but with opinions.",
-    "I live on an SD card. It's cozy.",
-    "No subscription required. No login. No tracking. Just vibes.",
+    "I may be small but I can actually do things now.",
+    "Not just talking about it. Actually doing it.",
+    "I live on your machine. Everything I know, I learned from here.",
+    "No hallucinating file paths. I look things up for real.",
 
-    # Funny
+    # Personality
     "Hold on, my hamster wheel is spinning...",
-    "Computing locally... like it's 1995 but good.",
-    "Asking my neurons... all billion of them...",
-    "Doing math on a $80 computer. Living the dream.",
+    "Computing locally... like it's 1995 but better.",
     "If I'm slow it's because I'm THINKING, not buffering.",
-    "Fun fact: I could run on a potato. This Pi is luxury.",
-    "One sec, consulting my tiny brain...",
     "Generating response using only vibes and linear algebra...",
     "I'm not slow, I'm thoughtful.",
     "Processing... with zero venture capital...",
+    "One sec, checking the actual answer instead of guessing...",
+    "Doing real work on your real machine with real files.",
 ]
 
 DEEP_LOADING_MESSAGES = [
-    "Deep thinking mode. This is where I earn my keep.",
-    "Switching to my bigger brain for this one...",
-    "Complex question detected. Engaging all 4 CPU cores.",
-    "Give me a moment - this one's worth thinking about.",
+    "Deep thinking mode. Switching to the bigger model.",
+    "This one deserves the full brain. Give me a moment.",
+    "Complex question detected. Engaging all cores.",
     "Loading the heavy model. Like putting on my reading glasses.",
-    "This is a big question. Using the big model.",
-    "Engaging Mistral 7B. That's 7 billion parameters of pure thought.",
-    "Deep thinking... this uses more watts but it's worth it.",
+    "Pulling out the 7 billion parameter brain for this one.",
+    "Deep thinking... searching, reading, reasoning.",
+    "Big question. Big model. Real answers.",
+    "This is where tool use really shines. Hang on.",
 ]
 
 
@@ -260,9 +254,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         .loading-msg {
-            font-size: 12px;
+            font-size: 16px;
             color: var(--text-dim);
             font-style: italic;
+            text-align: center;
+            padding: 8px 16px;
+            animation: loadFadeIn 0.4s ease-out;
+        }
+
+        .loading-msg .loading-text {
+            display: inline-block;
+            animation: loadCycle 0.4s ease-out;
+        }
+
+        @keyframes loadFadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes loadCycle {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         /* === INPUT === */
@@ -422,17 +434,45 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             return div;
         }
 
+        let loadingInterval = null;
+
         function setThinking(isDeep) {
             face.className = 'face thinking';
             faceLabel.textContent = isDeep ? 'thinking deeply...' : 'thinking...';
             face.textContent = '(-_-)';
 
             const msgs = isDeep ? deepLoadingMessages : loadingMessages;
-            const msg = msgs[Math.floor(Math.random() * msgs.length)];
-            return addMessage('system', msg);
+            // Shuffle and pick a sequence to cycle through
+            const shuffled = [...msgs].sort(() => Math.random() - 0.5);
+            let idx = 0;
+
+            const div = document.createElement('div');
+            div.className = 'message system loading-msg';
+            const span = document.createElement('span');
+            span.className = 'loading-text';
+            span.textContent = shuffled[idx];
+            div.appendChild(span);
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+
+            // Cycle to next message every 2.5s
+            loadingInterval = setInterval(() => {
+                idx = (idx + 1) % shuffled.length;
+                span.style.animation = 'none';
+                span.offsetHeight; // force reflow
+                span.style.animation = 'loadCycle 0.4s ease-out';
+                span.textContent = shuffled[idx];
+                chat.scrollTop = chat.scrollHeight;
+            }, 2500);
+
+            return div;
         }
 
         function stopThinking() {
+            if (loadingInterval) {
+                clearInterval(loadingInterval);
+                loadingInterval = null;
+            }
             face.className = 'face';
             faceLabel.textContent = 'online';
             fetch('/api/status').then(r => r.json()).then(data => {
@@ -584,11 +624,11 @@ def _handle_query():
             "dangerous": dangerous_cmds if dangerous_cmds else None,
         })
 
-    # LLM fallback
+    # LLM fallback (with tools)
     deep = is_deep_query(query)
     context = get_llm_context(query)
     start = time.time()
-    response = ask_llm(query, context)
+    response = agent_step(query, context)
     elapsed = time.time() - start
 
     if response is None:
