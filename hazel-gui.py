@@ -553,9 +553,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 @app.route("/")
 def index():
     html = HTML_TEMPLATE.replace(
-        "LOADING_MESSAGES_JSON", json.dumps(LOADING_MESSAGES)
-    ).replace(
         "DEEP_LOADING_MESSAGES_JSON", json.dumps(DEEP_LOADING_MESSAGES)
+    ).replace(
+        "LOADING_MESSAGES_JSON", json.dumps(LOADING_MESSAGES)
     )
     return html
 
