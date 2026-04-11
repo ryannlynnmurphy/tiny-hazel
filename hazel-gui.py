@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from hazel import (
     handle_instant, ask_llm, agent_step, get_llm_context, is_deep_query,
     extract_commands, run_cmd, is_dangerous, humanize, auto_provision,
+    download_model, auto_select_models,
     sys_overview, sys_temp, get_face, remember, get_memory_context,
     HAZEL_DIR, MODEL_DEFAULT, MODEL_DEEP, get_installed_models,
     get_available_ram_gb, has_gpu, recommend_models, FACES,
@@ -589,6 +590,25 @@ def _handle_query():
     instant = handle_instant(query)
     if instant is not None:
         response_text, flag = instant
+
+        # Handle download requests in background thread
+        if flag == "download" and response_text.startswith("__DOWNLOAD__:"):
+            parts = response_text.split(":", 3)
+            model_name = parts[1]
+            size_gb = parts[2]
+            desc = parts[3] if len(parts) > 3 else ""
+
+            def _bg_download(name):
+                success = download_model(name)
+                if success:
+                    auto_select_models()
+
+            threading.Thread(target=_bg_download, args=(model_name,), daemon=True).start()
+
+            return jsonify({
+                "response": f"Downloading {model_name} ({size_gb}GB)... this will take a few minutes.\n\n{desc}\n\nI'll keep working while it downloads. Type 'model' to check when it's ready.",
+            })
+
         display, commands = extract_commands(response_text)
 
         # Strip ANSI colors

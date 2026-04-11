@@ -1232,19 +1232,12 @@ def handle_instant(query):
             if path.exists():
                 return f"  {name} is already downloaded.", "skip"
 
+            # Return download request — caller (CLI or GUI) handles execution
             ram = get_available_ram_gb()
+            warn = ""
             if ram < min_ram:
-                print(f"\n  {Y}Warning: You have {ram}GB RAM, this model needs {min_ram}GB+{X}")
-
-            # Download using Python (cross-platform, no wget needed)
-            success = download_model(name)
-            if success:
-                # Re-run model selection to pick up the new model
-                auto_select_models()
-                t3 = MODEL_TIER3.name if MODEL_TIER3 and hasattr(MODEL_TIER3, 'name') else "none"
-                return f"  {name} installed. Tier 3 (deep) is now: {t3}", "skip"
-            else:
-                return f"  {R}Failed to download {name}.{X}", "skip"
+                warn = f" (warning: {ram}GB RAM, model needs {min_ram}GB+)"
+            return f"__DOWNLOAD__:{name}:{size}:{desc}{warn}", "download"
         else:
             available = ", ".join(MODEL_REGISTRY.keys())
             return f"  Unknown model '{name}'. Available: {available}", "skip"
@@ -2280,6 +2273,20 @@ def main():
         instant = handle_instant(user_input)
         if instant is not None:
             response_text, flag = instant
+
+            # Handle download requests (blocking is fine in CLI)
+            if flag == "download" and response_text.startswith("__DOWNLOAD__:"):
+                parts = response_text.split(":", 3)
+                model_name = parts[1]
+                success = download_model(model_name)
+                if success:
+                    auto_select_models()
+                    t3 = MODEL_TIER3.name if MODEL_TIER3 and hasattr(MODEL_TIER3, 'name') else "none"
+                    print(f"\n{G}  {model_name} installed. Tier 3 (deep) is now: {t3}{X}\n")
+                else:
+                    print(f"\n{R}  Failed to download {model_name}.{X}\n")
+                continue
+
             display, commands = extract_commands(response_text)
 
             if flag == "skip":
